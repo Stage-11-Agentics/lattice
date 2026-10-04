@@ -254,6 +254,18 @@ def _refuse_unstripped_video(name: str, nothing: str, is_json: bool):  # noqa: A
     )
 
 
+def _refuse_unstripped_photo(name: str, nothing: str, is_json: bool):  # noqa: ANN202
+    from lattice.core.issue_media import HEIC_HINT
+
+    output_error(
+        f"{name} could not be converted to a metadata-free photo. Repair the JPEG/PNG or "
+        f"convert HEIC to JPEG (for example: {HEIC_HINT}), then try again. {nothing} "
+        "To store the original, pass --keep-photo-metadata.",
+        "VALIDATION_ERROR",
+        is_json,
+    )
+
+
 def _prepare_media(
     arg: str,
     path,
@@ -262,16 +274,24 @@ def _prepare_media(
     nothing: str,
     is_json: bool,  # noqa: ANN001
     keep_video_metadata: bool = False,
+    keep_photo_metadata: bool = False,
 ) -> dict | None:
     """One file, ready to send: ``{"item", "name", "arg", "hashes", "notes", "sizes"}``.
 
     A video is transcoded and gets frames when ffmpeg is present; a HEIC photo is
-    converted to JPEG. ``None`` for a HEIC photo nothing could convert. A video
-    whose metadata could not be stripped is refused unless *keep_video_metadata*.
+    converted to JPEG. If HEIC conversion or JPEG/PNG parsing fails, the original
+    is refused unless *keep_photo_metadata*. Video behavior remains controlled by
+    *keep_video_metadata*.
     """
     import hashlib
 
-    from lattice.core.issue_media import clean_original_name, frame_name, media_kind
+    from lattice.core.issue_media import (
+        PhotoMetadataError,
+        clean_original_name,
+        frame_name,
+        media_kind,
+        strip_photo_metadata,
+    )
     from lattice.ops.task_attach import encode_payload
 
     name = clean_original_name(path.name) or "file"
@@ -285,16 +305,33 @@ def _prepare_media(
 
         converted = convert_heic(path)
         if converted is None:
-            return None
-        item = {
-            "payload": encode_payload(name, converted),
-            "converted_from": {
-                "content_type": "image/heic",
-                "size_bytes": len(content),
-                "sha256": sha256,
-            },
-        }
-        record["notes"].append(("converted", "heic"))
+            if not keep_photo_metadata:
+                _refuse_unstripped_photo(name, nothing, is_json)
+            item = {"payload": encode_payload(name, content)}
+            record["notes"].append(("photo_metadata_kept", "heic_unconverted"))
+        else:
+            converted_sha = hashlib.sha256(converted).hexdigest()
+            try:
+                clean = strip_photo_metadata(converted, "image/jpeg")
+            except PhotoMetadataError:
+                if not keep_photo_metadata:
+                    _refuse_unstripped_photo(name, nothing, is_json)
+                clean = converted
+                record["notes"].append(("photo_metadata_kept", "conversion_output_unstrippable"))
+            else:
+                if clean != converted:
+                    record["notes"].append(("photo_metadata_removed", ""))
+            item = {
+                "payload": encode_payload(name, clean),
+                "converted_from": {
+                    "content_type": "image/heic",
+                    "size_bytes": len(content),
+                    "sha256": sha256,
+                },
+            }
+            record["hashes"].add(converted_sha)
+            record["hashes"].add(hashlib.sha256(clean).hexdigest())
+            record["notes"].append(("converted", "heic"))
     elif video:
         from lattice.integrations.ffmpeg import ffmpeg_state, prepare_video
 
@@ -322,13 +359,30 @@ def _prepare_media(
             notes.append(("metadata_kept", ""))
         record["notes"] = notes
     else:
+        if content_type in {"image/jpeg", "image/png"}:
+            try:
+                clean = strip_photo_metadata(content, content_type)
+            except PhotoMetadataError:
+                if not keep_photo_metadata:
+                    _refuse_unstripped_photo(name, nothing, is_json)
+                clean = content
+                record["notes"].append(("photo_metadata_kept", "malformed_image"))
+            else:
+                if clean != content:
+                    record["notes"].append(("photo_metadata_removed", ""))
+            record["hashes"].add(hashlib.sha256(clean).hexdigest())
+            content = clean
         item = {"payload": encode_payload(name, content)}
     record["item"] = item
     return record
 
 
 def _collect_evidence(
-    evidence: tuple[str, ...], config: dict, is_json: bool, keep_video_metadata: bool = False
+    evidence: tuple[str, ...],
+    config: dict,
+    is_json: bool,
+    keep_video_metadata: bool = False,
+    keep_photo_metadata: bool = False,
 ) -> tuple[list[str], list[dict], list[dict]]:
     """``(pointers, media records, kept-as-text notes)`` for ``issue file --evidence``.
 
@@ -347,7 +401,14 @@ def _collect_evidence(
         what, path, content_type = _classify(arg)
         if what in ("media", "heic"):
             record = _prepare_media(
-                arg, path, content_type, limit, "Nothing was filed.", is_json, keep_video_metadata
+                arg,
+                path,
+                content_type,
+                limit,
+                "Nothing was filed.",
+                is_json,
+                keep_video_metadata,
+                keep_photo_metadata,
             )
             if record is None:
                 pointers.append(arg)
@@ -439,6 +500,13 @@ def _media_notes(
                 lines.append(
                     f"{name}: filed as it is, with its metadata, which can include where it "
                     "was recorded (--keep-video-metadata)"
+                )
+            elif reason == "photo_metadata_removed":
+                lines.append(f"{name}: removed location and identifying photo metadata")
+            elif reason == "photo_metadata_kept":
+                lines.append(
+                    f"{name}: filed with photo metadata, which can include its location "
+                    "(--keep-photo-metadata)"
                 )
             elif reason == "one_frame":
                 lines.append(f"{name}: its length is unknown, so it has one frame, at 0:00")
@@ -557,6 +625,14 @@ def issue() -> None:
         "when ffmpeg cannot strip it. Without this, such a video is refused."
     ),
 )
+@click.option(
+    "--keep-photo-metadata",
+    is_flag=True,
+    help=(
+        "File a photo as it is when metadata stripping fails, including HEIC when no "
+        "converter is available. Valid JPEG and PNG files are still stripped."
+    ),
+)
 @common_options
 def issue_file(
     title: str,
@@ -567,6 +643,7 @@ def issue_file(
     source: str | None,
     source_ref: str | None,
     keep_video_metadata: bool,
+    keep_photo_metadata: bool,
     output_json: bool,
     quiet: bool,
     session: str | None,
@@ -581,12 +658,15 @@ def issue_file(
     description; an explicit description is appended after the overflow.
 
     A photo or video passed as --evidence (decided by its content: PNG, JPEG,
-    GIF, WebP; MP4, MOV, WebM; HEIC is converted to JPEG) is copied into the
+    HEIC, GIF, WebP; MP4, MOV, WebM; HEIC is converted to JPEG when possible) is copied into the
     issue. With ffmpeg, a video is re-encoded to H.264 and gets still frames an
     agent can read ('lattice issue media <issue> --paths'). ffmpeg also removes
     a video's metadata, which can include where it was recorded; when it cannot,
-    the video is refused unless you pass --keep-video-metadata. Photos are filed
-    as they are: Lattice does not strip their EXIF data.
+    the video is refused unless you pass --keep-video-metadata. JPEG and PNG
+    location and identifying metadata are removed before filing. HEIC is
+    converted to JPEG; when conversion or stripping fails, the photo is refused
+    unless you pass --keep-photo-metadata. That option never disables stripping
+    from a valid JPEG or PNG.
     """
     is_json = output_json
     if description is not None and description_file is not None:
@@ -608,7 +688,9 @@ def issue_file(
     # ffmpeg, ffprobe and sips run next: release the cache's read lock first, so
     # a long transcode never holds up a sync (SPEC §9.4).
     checked[0].end_read_phase()
-    pointers, records, kept = _collect_evidence(evidence, checked[2], is_json, keep_video_metadata)
+    pointers, records, kept = _collect_evidence(
+        evidence, checked[2], is_json, keep_video_metadata, keep_photo_metadata
+    )
     _board, _lattice_dir, result = _write(
         "issue.file",
         {
@@ -619,6 +701,7 @@ def issue_file(
             "source": source,
             "source_ref": source_ref,
             "media": tuple(r["item"] for r in records),
+            "keep_photo_metadata": keep_photo_metadata,
             **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
         },
         is_json,
@@ -1000,11 +1083,20 @@ issue.command("reopen")(_closing_command("issue.reopen", "Reopen a dismissed or 
         "when ffmpeg cannot strip it. Without this, such a video is refused."
     ),
 )
+@click.option(
+    "--keep-photo-metadata",
+    is_flag=True,
+    help=(
+        "File a photo as it is when metadata stripping fails, including HEIC when no "
+        "converter is available. Valid JPEG and PNG files are still stripped."
+    ),
+)
 @common_options
 def issue_attach(
     issue_id: str,
     files: tuple[str, ...],
     keep_video_metadata: bool,
+    keep_photo_metadata: bool,
     output_json: bool,
     quiet: bool,
     session: str | None,
@@ -1016,12 +1108,17 @@ def issue_attach(
     """Add photos and videos to an issue after filing (closed issues too).
 
     All or nothing: every FILE must be a photo or video by its content (PNG,
-    JPEG, GIF, WebP; MP4, MOV, WebM; HEIC is converted to JPEG). Content the
+    JPEG, HEIC, GIF, WebP; MP4, MOV, WebM; HEIC is converted to JPEG). Content the
     issue already holds is skipped.
 
     A video has its metadata (which can include where it was recorded) removed
     by ffmpeg. When ffmpeg cannot do that, the video is refused unless you pass
     --keep-video-metadata.
+
+    JPEG and PNG location and identifying metadata are removed before filing.
+    HEIC is converted to JPEG; when conversion or stripping fails, the photo is
+    refused unless you pass --keep-photo-metadata. Valid JPEG and PNG files are
+    still stripped when that option is present.
     """
     from lattice.core.issue_media import HEIC_HINT, media_limits, media_summary
 
@@ -1033,7 +1130,14 @@ def issue_attach(
     seen: set[str] = set()
     for arg, path, content_type in _check_attach_args(files, is_json):
         record = _prepare_media(
-            arg, path, content_type, limit, "Nothing was attached.", is_json, keep_video_metadata
+            arg,
+            path,
+            content_type,
+            limit,
+            "Nothing was attached.",
+            is_json,
+            keep_video_metadata,
+            keep_photo_metadata,
         )
         if record is None:
             output_error(
@@ -1051,6 +1155,7 @@ def issue_attach(
         {
             "issue": issue_id,
             "media": tuple(r["item"] for r in records),
+            "keep_photo_metadata": keep_photo_metadata,
             **provenance_params(model, session, triggered_by, on_behalf_of, provenance_reason),
         },
         is_json,

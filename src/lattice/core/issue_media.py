@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 import re
 import struct
+import zlib
 from collections.abc import Iterable, Mapping
 
 # ---------------------------------------------------------------------------
@@ -25,6 +26,7 @@ from collections.abc import Iterable, Mapping
 MEDIA_TYPES: Mapping[str, tuple[str, str]] = {
     "image/png": ("photo", ".png"),
     "image/jpeg": ("photo", ".jpg"),
+    "image/heic": ("photo", ".heic"),
     "image/gif": ("photo", ".gif"),
     "image/webp": ("photo", ".webp"),
     "video/mp4": ("video", ".mp4"),
@@ -34,7 +36,7 @@ MEDIA_TYPES: Mapping[str, tuple[str, str]] = {
 
 MEDIA_KINDS: tuple[str, ...] = ("photo", "video")
 
-ACCEPTED_FORMATS_TEXT = "PNG, JPEG, GIF, WebP; MP4, MOV, WebM"
+ACCEPTED_FORMATS_TEXT = "PNG, JPEG, HEIC, GIF, WebP; MP4, MOV, WebM"
 
 #: The macOS conversion an agent can run for a HEIC photo when Lattice cannot.
 HEIC_HINT = "sips -s format jpeg in.heic --out out.jpg"
@@ -76,9 +78,10 @@ def _ftyp_brands(head: bytes) -> tuple[bytes, bytes] | None:
 def sniff_media(head: bytes) -> str | None:
     """The accepted content type of a file starting with *head*, else ``None``.
 
-    Decided from magic bytes only. SVG and HTML (they can carry script), HEIC
-    and AVIF, TIFF, BMP, PDF, AVI, plain Matroska and everything else are not
-    media.
+    Decided from magic bytes only. SVG and HTML (they can carry script), AVIF,
+    TIFF, BMP, PDF, AVI, plain Matroska and everything else are not media.
+    HEIC is recognized for the explicit keep-metadata fallback; normal filers
+    convert it before calling the operation.
     """
     if head.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
@@ -88,6 +91,8 @@ def sniff_media(head: bytes) -> str | None:
         return "image/gif"
     if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return "image/webp"
+    if sniff_heic(head):
+        return "image/heic"
     brands = _ftyp_brands(head)
     if brands is not None:
         major, _rest = brands
@@ -110,6 +115,302 @@ def sniff_heic(head: bytes) -> bool:
     if major in (b"mif1", b"msf1") and (b"avif" in rest or b"avis" in rest):
         return False
     return major in _HEIC_BRANDS
+
+
+class PhotoMetadataError(ValueError):
+    """A JPEG or PNG could not be walked safely enough to strip metadata."""
+
+
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_PNG_SAFE_CHUNKS = frozenset(
+    {
+        b"IHDR",
+        b"PLTE",
+        b"IDAT",
+        b"IEND",
+        b"tRNS",
+        b"cHRM",
+        b"gAMA",
+        b"iCCP",
+        b"sBIT",
+        b"sRGB",
+        b"cICP",
+        b"mDCV",
+        b"cLLI",
+        b"bKGD",
+        b"pHYs",
+        b"acTL",
+        b"fcTL",
+        b"fdAT",
+    }
+)
+_JPEG_SOF_MARKERS = frozenset(
+    {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+)
+_JPEG_SAFE_SEGMENTS = frozenset({0xC4, 0xCC, 0xDB, 0xDC, 0xDD}) | _JPEG_SOF_MARKERS
+
+
+def _exif_orientation(payload: bytes) -> int | None:
+    """Read a structurally bounded Orientation from an Exif APP1 payload."""
+    if not payload.startswith(b"Exif\0\0"):
+        return None
+    tiff = payload[6:]
+    if len(tiff) < 8:
+        return None
+    order = tiff[:2]
+    if order == b"II":
+        endian = "little"
+    elif order == b"MM":
+        endian = "big"
+    else:
+        return None
+
+    def u16(offset: int) -> int:
+        return int.from_bytes(tiff[offset : offset + 2], endian)
+
+    def u32(offset: int) -> int:
+        return int.from_bytes(tiff[offset : offset + 4], endian)
+
+    if u16(2) != 42:
+        return None
+    ifd = u32(4)
+    if ifd < 8 or ifd + 2 > len(tiff):
+        return None
+    count = u16(ifd)
+    end = ifd + 2 + count * 12 + 4
+    if end > len(tiff):
+        return None
+    type_sizes = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8}
+    orientation = None
+    for index in range(count):
+        entry = ifd + 2 + index * 12
+        tag, value_type, value_count = u16(entry), u16(entry + 2), u32(entry + 4)
+        unit = type_sizes.get(value_type)
+        if unit is None or value_count > (len(tiff) // unit):
+            return None
+        byte_count = unit * value_count
+        if byte_count > 4:
+            value_offset = u32(entry + 8)
+            if value_offset > len(tiff) or byte_count > len(tiff) - value_offset:
+                return None
+        if tag == 0x0112:
+            if value_type != 3 or value_count != 1:
+                return None
+            value = u16(entry + 8)
+            orientation = value if 1 <= value <= 8 else None
+    next_ifd = u32(ifd + 2 + count * 12)
+    if next_ifd and next_ifd + 2 > len(tiff):
+        return None
+    return orientation
+
+
+def _minimal_orientation_exif(orientation: int) -> bytes:
+    """One little-endian IFD entry, with no identifying Exif tags."""
+    tiff = (
+        b"II*\0\x08\0\0\0"
+        + b"\x01\0"
+        + b"\x12\x01\x03\0\x01\0\0\0"
+        + orientation.to_bytes(2, "little")
+        + b"\0\0\0\0\0\0"
+    )
+    return b"Exif\0\0" + tiff
+
+
+def _strip_jpeg(data: bytes) -> tuple[bytes, tuple[str, ...]]:
+    if len(data) < 4 or data[:2] != b"\xff\xd8":
+        raise PhotoMetadataError("JPEG is missing its start marker.")
+    kept: list[tuple[int, bytes]] = []
+    orientation = None
+    saw_sof = False
+    pos = 2
+    while pos < len(data):
+        marker_start = pos
+        if data[pos] != 0xFF:
+            raise PhotoMetadataError("JPEG marker framing is invalid.")
+        while pos < len(data) and data[pos] == 0xFF:
+            pos += 1
+        if pos >= len(data):
+            raise PhotoMetadataError("JPEG ends inside a marker.")
+        marker = data[pos]
+        pos += 1
+        if marker == 0x00:
+            raise PhotoMetadataError("JPEG has a stuffed byte outside image data.")
+        if marker == 0xD8:
+            raise PhotoMetadataError("JPEG contains a second start marker.")
+        if marker == 0xD9:
+            if not saw_sof:
+                raise PhotoMetadataError("JPEG has no frame header.")
+            kept.append((marker, data[marker_start:pos]))
+            break
+        if marker == 0x01:
+            kept.append((marker, data[marker_start:pos]))
+            continue
+        if 0xD0 <= marker <= 0xD7:
+            raise PhotoMetadataError("JPEG restart marker is outside a scan.")
+        if pos + 2 > len(data):
+            raise PhotoMetadataError("JPEG ends inside a segment length.")
+        segment_length = int.from_bytes(data[pos : pos + 2], "big")
+        if segment_length < 2 or segment_length > len(data) - pos:
+            raise PhotoMetadataError("JPEG segment length is invalid or truncated.")
+        segment_end = pos + segment_length
+        payload = data[pos + 2 : segment_end]
+
+        if marker == 0xDA:
+            if not payload or not 1 <= payload[0] <= 4 or segment_length != 6 + 2 * payload[0]:
+                raise PhotoMetadataError("JPEG scan header is invalid.")
+            scan = segment_end
+            while True:
+                marker_at = data.find(b"\xff", scan)
+                if marker_at < 0 or marker_at + 1 >= len(data):
+                    raise PhotoMetadataError("JPEG scan has no following marker.")
+                code_at = marker_at + 1
+                while code_at < len(data) and data[code_at] == 0xFF:
+                    code_at += 1
+                if code_at >= len(data):
+                    raise PhotoMetadataError("JPEG scan ends inside a marker.")
+                code = data[code_at]
+                if code == 0x00 or 0xD0 <= code <= 0xD7:
+                    scan = code_at + 1
+                    continue
+                break
+            # ``scan`` advances past stuffed bytes and restart markers while
+            # looking for the next marker, but ordinary entropy bytes after the
+            # last such marker are still part of this scan.
+            kept.append((marker, data[marker_start:marker_at]))
+            pos = marker_at
+            continue
+
+        segment = data[marker_start:segment_end]
+        if marker == 0xE1:
+            if orientation is None:
+                orientation = _exif_orientation(payload)
+        elif 0xE0 <= marker <= 0xEF:
+            keep_segment = (
+                (marker == 0xE0 and payload.startswith((b"JFIF\0", b"JFXX\0")))
+                or (marker == 0xE2 and payload.startswith(b"ICC_PROFILE\0"))
+                or (marker == 0xEE and payload.startswith(b"Adobe"))
+            )
+            if keep_segment:
+                kept.append((marker, segment))
+        elif marker == 0xFE:
+            pass
+        elif marker in _JPEG_SAFE_SEGMENTS:
+            if marker in _JPEG_SOF_MARKERS:
+                if len(payload) < 6 or not payload[5] or len(payload) != 6 + 3 * payload[5]:
+                    raise PhotoMetadataError("JPEG frame header is invalid.")
+                saw_sof = True
+            kept.append((marker, segment))
+        else:
+            raise PhotoMetadataError(f"JPEG contains unsupported marker 0x{marker:02x}.")
+        pos = segment_end
+    else:
+        raise PhotoMetadataError("JPEG is missing its end marker.")
+
+    eoi_end = pos
+    out = bytearray(data[:2])
+    orientation_segment = (
+        _jpeg_segment(0xE1, _minimal_orientation_exif(orientation)) if orientation else None
+    )
+    app0_index = next(
+        (index for index, (marker, _segment) in enumerate(kept) if marker == 0xE0), None
+    )
+    inserted = False
+    for index, (marker, segment) in enumerate(kept):
+        out.extend(segment)
+        if orientation_segment and index == app0_index:
+            out.extend(orientation_segment)
+            inserted = True
+    if orientation_segment and not inserted:
+        out[2:2] = orientation_segment
+    changes = []
+    if bytes(out) != data[:eoi_end]:
+        changes.append("jpeg_metadata_or_trailing_data")
+    return bytes(out), tuple(changes)
+
+
+def _jpeg_segment(marker: int, payload: bytes) -> bytes:
+    length = len(payload) + 2
+    if length > 0xFFFF:
+        raise PhotoMetadataError("JPEG metadata segment is too large.")
+    return b"\xff" + bytes([marker]) + length.to_bytes(2, "big") + payload
+
+
+def _strip_png(data: bytes) -> tuple[bytes, tuple[str, ...]]:
+    if not data.startswith(_PNG_SIGNATURE):
+        raise PhotoMetadataError("PNG is missing its signature.")
+    pos = len(_PNG_SIGNATURE)
+    out = bytearray(_PNG_SIGNATURE)
+    first = True
+    saw_idat = False
+    changes = []
+    while pos + 12 <= len(data):
+        length = int.from_bytes(data[pos : pos + 4], "big")
+        kind = data[pos + 4 : pos + 8]
+        if any(not (65 <= byte <= 90 or 97 <= byte <= 122) for byte in kind):
+            raise PhotoMetadataError("PNG chunk type is invalid.")
+        chunk_end = pos + 12 + length
+        if chunk_end > len(data):
+            raise PhotoMetadataError("PNG chunk is truncated.")
+        payload = data[pos + 8 : pos + 8 + length]
+        expected_crc = int.from_bytes(data[pos + 8 + length : chunk_end], "big")
+        if zlib.crc32(kind + payload) & 0xFFFFFFFF != expected_crc:
+            raise PhotoMetadataError("PNG chunk checksum is invalid.")
+        if first:
+            if kind != b"IHDR" or length != 13:
+                raise PhotoMetadataError("PNG must begin with one 13-byte IHDR chunk.")
+            width = int.from_bytes(payload[:4], "big")
+            height = int.from_bytes(payload[4:8], "big")
+            if not width or not height:
+                raise PhotoMetadataError("PNG dimensions must be positive.")
+            first = False
+        elif kind == b"IHDR":
+            raise PhotoMetadataError("PNG contains a second IHDR chunk.")
+        if kind == b"IDAT":
+            saw_idat = True
+        if kind == b"IEND":
+            if length != 0 or not saw_idat:
+                raise PhotoMetadataError("PNG end chunk or image data is invalid.")
+            out.extend(data[pos:chunk_end])
+            if chunk_end < len(data):
+                changes.append("png_trailing_data")
+            return bytes(out), tuple(changes)
+        if kind in _PNG_SAFE_CHUNKS:
+            out.extend(data[pos:chunk_end])
+        else:
+            if 65 <= kind[0] <= 90:
+                raise PhotoMetadataError(
+                    f"PNG contains an unknown critical PNG chunk {kind.decode('ascii')!r}."
+                )
+            changes.append(kind.decode("ascii", errors="replace"))
+        pos = chunk_end
+    raise PhotoMetadataError("PNG is missing a complete IEND chunk.")
+
+
+def photo_metadata_findings(data: bytes, content_type: str) -> tuple[str, ...]:
+    """Return categories removed by the stdlib JPEG/PNG scrubber.
+
+    Malformed input raises :class:`PhotoMetadataError`; callers that offer an
+    explicit keep option must make that choice before publishing the original.
+    """
+    if content_type == "image/jpeg":
+        return _strip_jpeg(data)[1]
+    if content_type == "image/png":
+        return _strip_png(data)[1]
+    raise PhotoMetadataError(f"metadata stripping does not support {content_type}.")
+
+
+def strip_photo_metadata(data: bytes, content_type: str) -> bytes:
+    """Strip JPEG/PNG identifying metadata using only the Python standard library.
+
+    JPEGs retain image coding, JFIF/JFXX, ICC and Adobe color markers, plus a
+    minimal orientation-only Exif APP1. PNGs retain rendering and animation
+    chunks. Malformed framing raises :class:`PhotoMetadataError`.
+    """
+    if content_type == "image/jpeg":
+        return _strip_jpeg(data)[0]
+    if content_type == "image/png":
+        return _strip_png(data)[0]
+    raise PhotoMetadataError(f"metadata stripping does not support {content_type}.")
 
 
 def media_kind(content_type: str) -> str | None:
@@ -459,6 +760,7 @@ __all__ = [
     "MEDIA_KINDS",
     "MEDIA_TYPES",
     "NO_FRAMES_TEXT",
+    "PhotoMetadataError",
     "SNIFF_BYTES",
     "UNREACHABLE_MEDIA_TEXT",
     "clean_original_name",
@@ -477,8 +779,10 @@ __all__ = [
     "media_summary",
     "next_media_n",
     "parse_frame_name",
+    "photo_metadata_findings",
     "present_media",
     "present_media_bytes",
     "sniff_heic",
     "sniff_media",
+    "strip_photo_metadata",
 ]

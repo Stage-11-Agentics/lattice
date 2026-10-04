@@ -13,7 +13,9 @@ import hashlib
 import http.client
 import shutil
 import socket
+import struct
 import time
+import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -43,11 +45,40 @@ MIB = 1024 * 1024
 
 
 def blob(size: int, seed: bytes = b"", *, head: bytes | None = None) -> bytes:
-    """A PNG-sniffable object of exactly *size* bytes; *seed* makes its hash unique."""
-    head = png() if head is None else head
-    data = head + seed
-    assert len(data) <= size, "the object is too small for its header and seed"
-    return data + b"\x00" * (size - len(data))
+    """A valid synthetic PNG of exactly *size* bytes; *seed* makes its hash unique."""
+    if head is not None:
+        data = head + seed
+        assert len(data) <= size, "the object is too small for its header and seed"
+        return data + b"\x00" * (size - len(data))
+
+    base = png()
+    prefix = b"profile\0\0"  # iCCP keyword, NUL, and compression method
+    extra = size - len(base)
+    raw_size = None
+    for blocks in range(1, 2 + (size // 65535)):
+        candidate = extra - 12 - len(prefix) - 6 - 5 * blocks
+        if candidate >= 0 and (candidate + 65534) // 65535 == blocks:
+            raw_size = candidate
+            break
+    assert raw_size is not None, "the object is too small for a valid PNG and profile"
+
+    raw_profile = (seed + b"\x00" * raw_size)[:raw_size]
+    compressed = bytearray(b"\x78\x01")
+    chunks = [raw_profile[i : i + 65535] for i in range(0, raw_size, 65535)]
+    for index, part in enumerate(chunks):
+        compressed.append(1 if index == len(chunks) - 1 else 0)
+        compressed.extend(struct.pack("<HH", len(part), len(part) ^ 0xFFFF))
+        compressed.extend(part)
+    if not chunks:  # zlib stream still needs one final empty stored block
+        compressed.extend(b"\x01\x00\x00\xff\xff")
+    compressed.extend(struct.pack(">I", zlib.adler32(raw_profile)))
+    profile = prefix + bytes(compressed)
+    chunk = struct.pack(">I", len(profile)) + b"iCCP" + profile
+    chunk += struct.pack(">I", zlib.crc32(b"iCCP" + profile))
+    ihdr_end = 8 + 25
+    data = base[:ihdr_end] + chunk + base[ihdr_end:]
+    assert len(data) == size
+    return data
 
 
 def sha(data: bytes) -> str:
@@ -133,7 +164,11 @@ def manifest_dir(root: Path, slug: str = SLUG) -> Path:
 
 
 def names(directory: Path) -> list[str]:
-    return sorted(p.name for p in directory.iterdir()) if directory.is_dir() else []
+    return (
+        sorted(p.name for p in directory.iterdir() if p.name != "aliases")
+        if directory.is_dir()
+        else []
+    )
 
 
 def board_of(root: Path, slug: str = SLUG) -> Path:
@@ -198,6 +233,291 @@ def test_upload_needs_a_token_for_the_project(server: ServerHandle, root: Path) 
     assert names(stage_dir(root)) == []
     # The same token may stage into its own project.
     assert put_stage(server, beta_only, blob(200, b"scope"), slug="beta")[0] == 201
+
+
+@pytest.mark.parametrize("content_type", ["image/jpeg", "image/png"])
+def test_photo_upload_returns_raw_and_canonical_hashes_and_writes_alias(
+    server: ServerHandle, root: Path, token: str, content_type: str
+) -> None:
+    from tests.photo_metadata_helpers import jpeg_with_gps, png_with_gps
+    from lattice.core.issue_media import strip_photo_metadata
+    import json
+
+    raw = jpeg_with_gps() if content_type == "image/jpeg" else png_with_gps()
+    raw_hash = sha(raw)
+    clean = strip_photo_metadata(raw, content_type)
+    result = stage_ok(server, token, raw)
+
+    assert result["upload_sha256"] == raw_hash
+    assert result["sha256"] == sha(clean)
+    assert result["size_bytes"] == len(clean)
+    assert result["photo_metadata_status"] == "stripped"
+    assert (stage_dir(root) / f"{sha(clean)}.blob").read_bytes() == clean
+    alias = stage_dir(root) / "aliases" / f"{raw_hash}.json"
+    assert json.loads(alias.read_text())["sha256"] == sha(clean)
+
+
+@pytest.mark.parametrize("content_type", ["image/jpeg", "image/png"])
+def test_raw_photo_stages_are_consumed_by_file_and_attach_with_canonical_dedupe(
+    server: ServerHandle, root: Path, token: str, content_type: str
+) -> None:
+    from lattice.core.issue_media import strip_photo_metadata
+    from lattice.storage.issue_media import media_path as stored_media_path
+    from tests.photo_metadata_helpers import (
+        assert_no_identifying_metadata,
+        jpeg_with_gps,
+        png_with_gps,
+    )
+
+    fixture = jpeg_with_gps if content_type == "image/jpeg" else png_with_gps
+    suffix = ".jpg" if content_type == "image/jpeg" else ".png"
+    first_raw, second_raw = fixture(gps_value=1), fixture(gps_value=9)
+    assert first_raw != second_raw
+    first_clean = strip_photo_metadata(first_raw, content_type)
+    second_clean = strip_photo_metadata(second_raw, content_type)
+    assert first_clean == second_clean
+
+    first_stage = stage_ok(server, token, first_raw)
+    assert first_stage["upload_sha256"] == sha(first_raw)
+    assert first_stage["sha256"] == sha(first_clean)
+    assert first_stage["size_bytes"] == len(first_clean)
+    issue = filed(server, token, [item(first_clean, f"first{suffix}")])
+    (entry,) = issue["media"]
+    stored = stored_media_path(board_of(root), issue["id"], entry)
+    assert stored is not None
+    assert stored.read_bytes() == first_clean
+    assert entry["sha256"] == sha(stored.read_bytes())
+    assert entry["size_bytes"] == len(stored.read_bytes())
+    assert_no_identifying_metadata(stored.read_bytes(), content_type)
+
+    # The second upload has a distinct raw hash but converges to the same staged
+    # object. Attach consumes that stage and skips the already-held canonical hash.
+    second_stage = stage_ok(server, token, second_raw)
+    assert second_stage["upload_sha256"] == sha(second_raw)
+    assert second_stage["sha256"] == first_stage["sha256"]
+    assert second_stage["size_bytes"] == first_stage["size_bytes"]
+    status, _, response = server.op(
+        SLUG,
+        "issue.attach",
+        {"issue": issue["id"], "media": [item(second_clean, f"second{suffix}")]},
+        token=token,
+    )
+    assert status == 200, response
+    attached = response["data"]["result"]["value"]
+    assert len(attached["media"]) == 1
+    assert attached["last_event_id"] == issue["last_event_id"]
+    assert stored.read_bytes() == first_clean
+    assert_no_identifying_metadata(stored.read_bytes(), content_type)
+
+
+@pytest.mark.parametrize("kind", ["jpeg", "png", "heic"])
+def test_hosted_photo_keep_fallback_requires_both_steps_and_keeps_only_on_failure(
+    server: ServerHandle, root: Path, token: str, kind: str
+) -> None:
+    import json
+
+    from lattice.core.issue_media import strip_photo_metadata
+    from lattice.storage.issue_media import media_path as stored_media_path
+    from tests.issue_media_helpers import heic
+    from tests.photo_metadata_helpers import jpeg_with_gps
+    from lattice.storage.issues import list_issue_snapshots
+
+    name, raw = {
+        "jpeg": ("broken.jpg", b"\xff\xd8\xff\xe1\x00\x20Exif"),
+        "png": ("broken.png", b"\x89PNG\r\n\x1a\n"),
+        "heic": ("kept.heic", heic()),
+    }[kind]
+    raw_hash = sha(raw)
+    raw_stage = stage_dir(root) / f"{raw_hash}.blob"
+    raw_metadata = stage_dir(root) / f"{raw_hash}.json"
+    raw_reservation = stage_dir(root) / f"{raw_hash}.reserve"
+    alias = stage_dir(root) / "aliases" / f"{raw_hash}.json"
+
+    status, _, body = put_stage(server, token, raw)
+    assert status == 400, body
+    assert error_code(body) == "VALIDATION_ERROR"
+    assert not raw_stage.exists() and not raw_metadata.exists() and not alias.exists()
+    assert not raw_reservation.exists()
+    assert server.project(SLUG).issue_media._reserved == {}
+
+    status, _, body = call(
+        server,
+        "PUT",
+        f"/v1/projects/{SLUG}/issues/media/staging/{raw_hash}",
+        token=token,
+        headers={**OCTET, "X-Lattice-Keep-Photo-Metadata": "true"},
+        body=raw,
+    )
+    assert status == 201, body
+    staged = json.loads(body)["data"]
+    assert staged["photo_metadata_status"] == "kept"
+    assert staged["sha256"] == staged["upload_sha256"] == raw_hash
+    assert staged["size_bytes"] == len(raw)
+    assert raw_stage.read_bytes() == raw
+
+    status, _, refused = file_issue(server, token, [item(raw, name)])
+    assert status == 400, refused
+    assert refused["error"]["code"] == "VALIDATION_ERROR"
+    assert list_issue_snapshots(board_of(root)) == []
+
+    status, _, accepted = file_issue(server, token, [item(raw, name)], keep_photo_metadata=True)
+    assert status == 200, accepted
+    issue = accepted["data"]["result"]["value"]
+    (entry,) = issue["media"]
+    stored = stored_media_path(board_of(root), issue["id"], entry)
+    assert stored is not None and stored.read_bytes() == raw
+    assert entry["sha256"] == raw_hash and entry["size_bytes"] == len(raw)
+
+    # The keep header is a fallback, not a privacy bypass for valid photos.
+    valid = jpeg_with_gps()
+    clean = strip_photo_metadata(valid, "image/jpeg")
+    valid_hash = sha(valid)
+    status, _, body = call(
+        server,
+        "PUT",
+        f"/v1/projects/{SLUG}/issues/media/staging/{valid_hash}",
+        token=token,
+        headers={**OCTET, "X-Lattice-Keep-Photo-Metadata": "true"},
+        body=valid,
+    )
+    assert status == 201, body
+    staged_valid = json.loads(body)["data"]
+    assert staged_valid["photo_metadata_status"] == "stripped"
+    assert staged_valid["upload_sha256"] == valid_hash
+    assert staged_valid["sha256"] == sha(clean)
+    assert staged_valid["size_bytes"] == len(clean)
+    assert (stage_dir(root) / f"{sha(clean)}.blob").read_bytes() == clean
+    status, _, filed_valid = file_issue(
+        server,
+        token,
+        [item(clean, "valid.jpg")],
+        keep_photo_metadata=True,
+    )
+    assert status == 200, filed_valid
+    valid_issue = filed_valid["data"]["result"]["value"]
+    (valid_entry,) = valid_issue["media"]
+    valid_stored = stored_media_path(board_of(root), valid_issue["id"], valid_entry)
+    assert valid_stored is not None and valid_stored.read_bytes() == clean
+    assert valid_entry["sha256"] == sha(clean)
+
+
+def test_photo_alias_and_canonical_stage_expire_independently_and_retry_recreates_them(
+    server: ServerHandle, root: Path, token: str
+) -> None:
+    import json
+
+    from lattice.server.issue_media import STAGE_TTL_SECONDS
+    from tests.photo_metadata_helpers import jpeg_with_gps
+    from lattice.core.issue_media import strip_photo_metadata
+
+    raw = jpeg_with_gps()
+    canonical_hash = sha(strip_photo_metadata(raw, "image/jpeg"))
+    raw_hash = sha(raw)
+    manager = server.project(SLUG).issue_media
+    first = stage_ok(server, token, raw)
+    alias_path = stage_dir(root) / "aliases" / f"{raw_hash}.json"
+    metadata_path = stage_dir(root) / f"{canonical_hash}.json"
+    blob_path = stage_dir(root) / f"{canonical_hash}.blob"
+
+    now = time.time()
+    alias = json.loads(alias_path.read_text())
+    alias["created_at"] = now - STAGE_TTL_SECONDS - 1
+    alias_path.write_text(json.dumps(alias))
+    metadata = json.loads(metadata_path.read_text())
+    metadata["created_at"] = now
+    metadata_path.write_text(json.dumps(metadata))
+    assert manager.expire_staging(now=now + 1) == 0
+    assert not alias_path.exists()
+    assert metadata_path.exists() and blob_path.exists()
+
+    retried = stage_ok(server, token, raw)
+    assert retried["upload_sha256"] == first["upload_sha256"]
+    assert retried["sha256"] == first["sha256"] == canonical_hash
+    assert alias_path.exists()
+
+    # Let the canonical stage expire while the separately-timed alias remains.
+    now = time.time()
+    alias = json.loads(alias_path.read_text())
+    alias["created_at"] = now
+    alias_path.write_text(json.dumps(alias))
+    metadata = json.loads(metadata_path.read_text())
+    metadata["created_at"] = now - STAGE_TTL_SECONDS - 1
+    metadata_path.write_text(json.dumps(metadata))
+    assert manager.expire_staging(now=now + 1) == 1
+    assert alias_path.exists()
+    assert not metadata_path.exists() and not blob_path.exists()
+
+    replayed = stage_ok(server, token, raw)
+    assert replayed["sha256"] == canonical_hash
+    assert alias_path.exists() and metadata_path.exists() and blob_path.exists()
+
+
+def test_photo_quota_reserves_the_canonical_size_after_raw_upload(root: Path, token: str) -> None:
+    from lattice.core.issue_media import strip_photo_metadata
+    from tests.photo_metadata_helpers import jpeg_with_gps
+
+    raw = jpeg_with_gps()
+    clean = strip_photo_metadata(raw, "image/jpeg")
+    spare = len(raw) - len(clean)
+    assert spare > 0
+    with media_server(root, max_issue_media_project_bytes=len(raw)) as server:
+        stage_ok(server, token, raw)
+        manager = server.project(SLUG).issue_media
+        assert manager._staged_unique_bytes() == len(clean)
+        filler = blob(spare, b"canonical quota transfer")
+        assert len(filler) == spare
+        assert put_stage(server, token, filler)[0] == 201
+        assert manager._staged_unique_bytes() == len(raw)
+
+
+def test_existing_canonical_photo_stage_is_credited_once_during_raw_quota_transfer(
+    server: ServerHandle, root: Path, token: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lattice.core.issue_media import strip_photo_metadata
+    from tests.photo_metadata_helpers import jpeg_with_gps
+
+    first_raw, second_raw = jpeg_with_gps(1), jpeg_with_gps(9)
+    canonical = strip_photo_metadata(first_raw, "image/jpeg")
+    canonical_hash = sha(canonical)
+    assert strip_photo_metadata(second_raw, "image/jpeg") == canonical
+    stage_ok(server, token, first_raw)
+    manager = server.project(SLUG).issue_media
+    original_write = manager._write_upload_bytes
+
+    def tighten_after_sanitize(path: Path, content: bytes) -> None:
+        original_write(path, content)
+        if path.suffix == ".part":
+            # The second upload's raw reservation already exists. At publication,
+            # only the pre-existing canonical staged object should count.
+            manager.max_project_bytes = len(canonical)
+
+    monkeypatch.setattr(manager, "_write_upload_bytes", tighten_after_sanitize)
+    result = stage_ok(server, token, second_raw)
+    assert result["sha256"] == canonical_hash
+    assert manager._staged_unique_bytes() == len(canonical)
+
+
+def test_failed_alias_publication_removes_new_canonical_stage(
+    server: ServerHandle, root: Path, token: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.photo_metadata_helpers import jpeg_with_gps
+    from lattice.core.issue_media import strip_photo_metadata
+
+    raw = jpeg_with_gps()
+    raw_hash = sha(raw)
+    clean_hash = sha(strip_photo_metadata(raw, "image/jpeg"))
+    manager = server.project(SLUG).issue_media
+
+    def fail_alias(_raw_hash: str, _alias: dict) -> None:
+        raise OSError("synthetic alias write failure")
+
+    monkeypatch.setattr(manager, "_write_alias", fail_alias)
+    status, _, _body = put_stage(server, token, raw)
+    assert status == 500
+    assert not (stage_dir(root) / f"{clean_hash}.blob").exists()
+    assert not (stage_dir(root) / f"{clean_hash}.json").exists()
+    assert not (stage_dir(root) / "aliases" / f"{raw_hash}.json").exists()
+    assert manager._reserved == {} and manager._inflight == set()
 
 
 def _body_complete(reply: bytes) -> bool:
@@ -342,9 +662,11 @@ def test_repeating_an_upload_is_idempotent(server: ServerHandle, root: Path, tok
         first
         == second
         == {
+            "upload_sha256": sha(data),
             "sha256": sha(data),
             "size_bytes": 400,
             "content_type": "image/png",
+            "photo_metadata_status": "stripped",
             "staged": True,
         }
     )

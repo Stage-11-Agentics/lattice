@@ -21,8 +21,11 @@ from lattice.storage.issues import current_issue, issue_write_context, write_iss
 @dataclass(frozen=True, kw_only=True)
 class IssueAttachParams(IssueParams):
     media: tuple[dict, ...] = ()
+    keep_photo_metadata: bool = False
 
     def check(self) -> None:
+        if not isinstance(self.keep_photo_metadata, bool):
+            raise OpError("VALIDATION_ERROR", "keep_photo_metadata must be a boolean.")
         if not self.media:
             raise OpError("VALIDATION_ERROR", "Give at least one photo or video to attach.")
         issue_common.check_media_items(self.media)
@@ -40,6 +43,9 @@ class IssueAttach:
             ctx.config,
             nothing="Nothing was attached.",
             stage_manager=ctx.issue_media,
+            token_id=(ctx.caller.origin.get("authenticated") or {}).get("token_id"),
+            require_stage_owner=ctx.caller.filing_only,
+            keep_photo_metadata=p.keep_photo_metadata,
         )
         with issue_write_context(ctx.lattice_dir, issue_id):
             snapshot = current_issue(ctx.lattice_dir, issue_id)

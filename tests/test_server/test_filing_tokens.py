@@ -833,10 +833,13 @@ def test_staging_body_above_token_capacity_is_token_scoped_413(root: Path) -> No
 
 def test_default_filing_token_can_stage_a_70_mib_file(server: ServerHandle, root: Path) -> None:
     filing = filing_token(root)
-    media = png() + bytes(70 * 1024 * 1024 - len(png()))
+    canonical = png()
+    media = canonical + bytes(70 * 1024 * 1024 - len(canonical))
     status, _, body = stage(server, filing, media)
     assert status == 201, body
-    assert body["data"]["size_bytes"] == 70 * 1024 * 1024
+    assert body["data"]["upload_sha256"] == hashlib.sha256(media).hexdigest()
+    assert body["data"]["sha256"] == hashlib.sha256(canonical).hexdigest()
+    assert body["data"]["size_bytes"] == len(canonical)
 
 
 def test_filing_token_reuses_cached_auth_record_and_rejects_session_selection(

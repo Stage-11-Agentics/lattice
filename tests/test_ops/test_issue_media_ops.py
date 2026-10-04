@@ -12,9 +12,16 @@ import pytest
 
 from lattice.boards import LocalBoard, resolve_board
 from lattice.ops import Caller, OpError
+from lattice.ops.issue_attach import IssueAttachParams
+from lattice.ops.issue_file import IssueFileParams
 from lattice.ops.task_attach import encode_payload
 from lattice.storage.issues import current_issue
-from tests.issue_media_helpers import HTML_AS_PNG, heic, jpeg, mp4, png
+from tests.issue_media_helpers import HTML_AS_PNG, heic, jpeg, mp4, png, png_with_large_icc
+from tests.photo_metadata_helpers import (
+    assert_no_identifying_metadata,
+    jpeg_with_gps,
+    png_with_gps,
+)
 
 
 @pytest.fixture()
@@ -81,6 +88,112 @@ def test_file_with_media_is_one_atomic_write(board: LocalBoard) -> None:
     assert len(log.read_text().splitlines()) == 3
 
 
+@pytest.mark.parametrize(
+    ("content", "content_type", "name"),
+    [
+        (jpeg_with_gps(), "image/jpeg", "gps.jpg"),
+        (png_with_gps(), "image/png", "gps.png"),
+    ],
+)
+def test_issue_file_sanitizes_before_hashing_and_storing(
+    board: LocalBoard, content: bytes, content_type: str, name: str
+) -> None:
+    result = run(board, "issue.file", title="photo", media=(item(content, name),))
+    entry = result.value["media"][0]
+    stored = Path(entry["path"]).read_bytes()
+    assert_no_identifying_metadata(stored, content_type)
+    assert entry["sha256"] == hashlib.sha256(stored).hexdigest()
+    assert entry["size_bytes"] == len(stored)
+    assert stored != content
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        IssueFileParams(title="photo", keep_photo_metadata="yes"),
+        IssueAttachParams(
+            issue="LAT-1",
+            media=({"payload": encode_payload("photo.png", png(1, 1))},),
+            keep_photo_metadata="yes",
+        ),
+    ],
+)
+def test_keep_photo_metadata_operation_input_must_be_boolean(params) -> None:  # noqa: ANN001
+    with pytest.raises(OpError, match="keep_photo_metadata must be a boolean"):
+        params.check()
+
+
+def test_malformed_photo_refuses_before_write_unless_explicitly_kept(board: LocalBoard) -> None:
+    malformed = b"\xff\xd8\xff\xe1\x00\x20Exif"
+    exc = refused(board, "issue.file", title="photo", media=(item(malformed, "bad.jpg"),))
+    assert exc.details["reason"] == "PHOTO_METADATA_UNSTRIPPED"
+    assert not (board.lattice_dir / "issues").exists()
+
+    result = run(
+        board,
+        "issue.file",
+        title="kept photo",
+        media=(item(malformed, "bad.jpg"),),
+        keep_photo_metadata=True,
+    )
+    entry = result.value["media"][0]
+    assert Path(entry["path"]).read_bytes() == malformed
+    assert entry["sha256"] == hashlib.sha256(malformed).hexdigest()
+
+
+def test_gps_only_variants_dedupe_after_sanitization(board: LocalBoard) -> None:
+    first, second = jpeg_with_gps(1), jpeg_with_gps(9)
+    assert first != second
+    result = run(
+        board,
+        "issue.file",
+        title="same photo, different gps",
+        media=(item(first, "one.jpg"), item(second, "two.jpg")),
+    )
+    assert len(result.value["media"]) == 1
+    assert_no_identifying_metadata(
+        Path(result.value["media"][0]["path"]).read_bytes(), "image/jpeg"
+    )
+
+
+def test_keep_photo_metadata_does_not_disable_successful_stripping(board: LocalBoard) -> None:
+    raw = png_with_gps()
+    result = run(
+        board,
+        "issue.file",
+        title="strip even with keep fallback",
+        media=(item(raw),),
+        keep_photo_metadata=True,
+    )
+    entry = result.value["media"][0]
+    stored = Path(entry["path"]).read_bytes()
+    assert_no_identifying_metadata(stored, "image/png")
+    assert entry["sha256"] == hashlib.sha256(stored).hexdigest()
+
+
+def test_unconvertible_heic_requires_explicit_keep(board: LocalBoard) -> None:
+    raw = heic()
+    exc = refused(board, "issue.file", title="heic", media=(item(raw, "raw.heic"),))
+    assert exc.details["reason"] == "PHOTO_METADATA_UNSTRIPPED"
+    result = run(
+        board,
+        "issue.file",
+        title="kept heic",
+        media=(item(raw, "raw.heic"),),
+        keep_photo_metadata=True,
+    )
+    entry = result.value["media"][0]
+    assert entry["content_type"] == "image/heic"
+    assert Path(entry["path"]).read_bytes() == raw
+
+
+def test_video_jpeg_frames_are_sanitized(board: LocalBoard) -> None:
+    source = item(mp4(), "clip.mp4", frames=[frame(0, jpeg_with_gps())])
+    result = run(board, "issue.file", title="clip", media=(source,))
+    frame_path = Path(result.value["media"][0]["frames"][0]["path"])
+    assert_no_identifying_metadata(frame_path.read_bytes(), "image/jpeg")
+
+
 def test_local_video_frame_payload_without_client_hash_keeps_local_behavior(
     board: LocalBoard,
 ) -> None:
@@ -115,7 +228,7 @@ def test_local_video_frame_payload_without_client_hash_keeps_local_behavior(
     ("media", "reason"),
     [
         ((item(HTML_AS_PNG),), "NOT_MEDIA"),
-        ((item(heic(), "x.heic"),), "NOT_MEDIA"),
+        ((item(heic(), "x.heic"),), "PHOTO_METADATA_UNSTRIPPED"),
         (({"payload": {**encode_payload("a.png", png()), "sha256": "0" * 64}},), None),
         ((item(png(), frames=[frame(0)]),), "WRONG_TYPE"),
         ((item(mp4(), frames=[frame(0, png())]),), "WRONG_TYPE"),
@@ -142,7 +255,7 @@ def test_bad_media_is_refused_before_the_number_is_allocated(
 
 def test_limits_refuse_the_file_and_the_issue(board: LocalBoard) -> None:
     _set_limits(board, max_media_mb=1, max_issue_media_mb=2)
-    big = png() + b"\x00" * (1024 * 1024)
+    big = png_with_large_icc(1024 * 1024)
     exc = refused(board, "issue.file", title="t", media=(item(big, "big.png"),))
     assert exc.code == "PAYLOAD_TOO_LARGE"
     assert exc.details["reason"] == "MEDIA_FILE_TOO_LARGE"
@@ -150,7 +263,7 @@ def test_limits_refuse_the_file_and_the_issue(board: LocalBoard) -> None:
     assert "Nothing was filed." in exc.message
     assert not (board.lattice_dir / "issues").exists()
 
-    three = [png() + bytes([i]) * 800_000 for i in range(3)]
+    three = [png_with_large_icc(800_000, i) for i in range(3)]
     issue = run(board, "issue.file", title="t", media=(item(three[0]), item(three[1]))).value
     before = media_files(board)
     exc = refused(board, "issue.attach", issue=issue["short_id"], media=(item(three[2]),))

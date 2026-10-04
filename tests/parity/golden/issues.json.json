@@ -554,7 +554,7 @@
       }
     }
   },
-  "description": "hosted and local issue filing, editing, closing, linking and promotion",
+  "description": "hosted and local issue filing, editing, closing, linking and fallback help",
   "mode": "json",
   "scenario": "issues",
   "steps": [

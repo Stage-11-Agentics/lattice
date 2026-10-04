@@ -79,8 +79,11 @@ class IssueFileParams(CommonParams):
     source: str | None = None
     source_ref: str | None = None
     media: tuple[dict, ...] = ()
+    keep_photo_metadata: bool = False
 
     def check(self) -> None:
+        if not isinstance(self.keep_photo_metadata, bool):
+            raise OpError("VALIDATION_ERROR", "keep_photo_metadata must be a boolean.")
         if self.title is not None and self.text is not None:
             raise OpError("VALIDATION_ERROR", "Provide title or legacy text, not both.")
         raw_title = self.title if self.title is not None else self.text
@@ -142,6 +145,7 @@ class IssueFile:
             stage_manager=ctx.issue_media,
             token_id=(ctx.caller.origin.get("authenticated") or {}).get("token_id"),
             require_stage_owner=ctx.caller.filing_only,
+            keep_photo_metadata=p.keep_photo_metadata,
         )
         issue_common.check_issue_total(ctx.config, "The issue", 0, decoded)
         raw_title = p.title if p.title is not None else (p.text or "")

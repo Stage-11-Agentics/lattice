@@ -112,7 +112,11 @@ def stage_issue_media(
 
     result = copy.deepcopy(params)
     objects: dict[str, bytes] = {}
+    staged_objects: dict[str, dict] = {}
     first = [offline]  # only the first upload may give up at once
+    keep_photo_metadata = result.get("keep_photo_metadata", False)
+    if not isinstance(keep_photo_metadata, bool):
+        raise OpError("VALIDATION_ERROR", "keep_photo_metadata must be a boolean.")
 
     def stage(payload: dict) -> dict:
         if set(payload) != {"filename", "content_b64", "sha256"}:
@@ -133,23 +137,39 @@ def stage_issue_media(
         if actual != claimed:
             raise OpError("VALIDATION_ERROR", "payload sha256 does not match its content.")
         if actual not in objects:
-            objects[actual] = content
             path = f"/v1/projects/{urllib.parse.quote(project, safe='')}/issues/media/staging/{actual}"
-            metadata = _upload(remote, path, content, offline=first[0])
+            metadata = _upload(
+                remote,
+                path,
+                content,
+                offline=first[0],
+                keep_photo_metadata=keep_photo_metadata,
+            )
             first[0] = False
             if (
                 not isinstance(metadata, dict)
-                or metadata.get("sha256") != actual
-                or metadata.get("size_bytes") != len(content)
+                or metadata.get("upload_sha256") != actual
+                or not isinstance(metadata.get("sha256"), str)
+                or not _MEDIA_SHA256_RE.fullmatch(metadata["sha256"])
+                or isinstance(metadata.get("size_bytes"), bool)
+                or not isinstance(metadata.get("size_bytes"), int)
+                or metadata["size_bytes"] < 0
+                or not isinstance(metadata.get("content_type"), str)
+                or metadata.get("photo_metadata_status")
+                not in {"stripped", "kept", "not_applicable"}
                 or metadata.get("staged") is not True
             ):
                 raise OpError(
                     "INTEGRITY_ERROR", "server returned invalid issue-media staging metadata."
                 )
+            objects[actual] = content
+            staged_objects[actual] = metadata
+        else:
+            metadata = staged_objects[actual]
         return {
             "filename": payload["filename"],
-            "sha256": actual,
-            "size": len(content),
+            "sha256": metadata["sha256"],
+            "size": metadata["size_bytes"],
             "staged": True,
         }
 
@@ -407,7 +427,14 @@ def _give_up(
     return write_unreachable(remote, detail, waited)
 
 
-def _upload(remote: http.Remote, path: str, content: bytes, *, offline: bool) -> Any:
+def _upload(
+    remote: http.Remote,
+    path: str,
+    content: bytes,
+    *,
+    offline: bool,
+    keep_photo_metadata: bool = False,
+) -> Any:
     """``PUT`` one staged media object with the retries of :func:`post_operation`.
 
     Staging writes nothing to the board and is idempotent by hash and size, so
@@ -428,6 +455,9 @@ def _upload(remote: http.Remote, path: str, content: bytes, *, offline: bool) ->
                 path,
                 raw_body=content,
                 content_type="application/octet-stream",
+                headers=(
+                    {"X-Lattice-Keep-Photo-Metadata": "true"} if keep_photo_metadata else None
+                ),
                 policy=MEDIA_UPLOAD_POLICY,
                 what="issue media upload",
             ).data()

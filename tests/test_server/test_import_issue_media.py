@@ -45,11 +45,19 @@ def _ok(*args: str, root: Path) -> dict:
 
 
 def _import_cmd(
-    root: Path, source: Path, *, omit_media: bool = False, as_json: bool = True, slug: str = SLUG
+    root: Path,
+    source: Path,
+    *,
+    omit_media: bool = False,
+    keep_photo_metadata: bool = False,
+    as_json: bool = True,
+    slug: str = SLUG,
 ):
     args = ["server", "project", "import", slug, "--from", str(source), "--root", str(root)]
     if omit_media:
         args.append(OMIT)
+    if keep_photo_metadata:
+        args.append("--keep-photo-metadata")
     if as_json:
         args.append("--json")
     return _cli(*args)
@@ -246,7 +254,8 @@ def test_default_import_copies_every_original_and_frame(root: Path, source: Path
 
     imported = root / "projects" / SLUG / ".lattice"
     assert result["media_omitted"] is False
-    assert result["media_count"] == len(_objects(board)) == 4 + 3
+    assert result["media_count"] == len(media) == 4
+    assert result["media_object_count"] == len(_objects(board)) == 4 + 3
     assert result["media_bytes"] == expected_bytes
     assert result["media_known_bytes"] == expected_bytes
     assert result["media_unknown_size_count"] == 0
@@ -269,6 +278,139 @@ def test_default_import_copies_every_original_and_frame(root: Path, source: Path
     assert result["copied"] > result["media_count"]
     assert _tree(source) == before
     assert not list((root / "projects").glob(".importing-*"))
+
+
+def test_import_sanitizes_photo_append_only_and_leaves_source_unchanged(
+    root: Path, source: Path
+) -> None:
+    from lattice.core.issues import replay_issue
+    from lattice.storage.issues import rebuild_issue_snapshots
+    from tests.photo_metadata_helpers import assert_no_identifying_metadata, jpeg_with_gps
+
+    board = source / ".lattice"
+    original_snapshot = _by_title(board, "Screens")
+    old_entry = next(m for m in original_snapshot["media"] if m["content_type"] == "image/jpeg")
+    old_path = media_path(board, original_snapshot["id"], old_entry)
+    raw = jpeg_with_gps()
+    old_path.write_bytes(raw)
+    repro_snapshot = _by_title(board, "Repro")
+    video = next(m for m in _media(board) if m.entry["content_type"] == "video/mp4")
+    raw_frame = jpeg_with_gps(gps_value=2, orientation=3)
+    video.frames[0].write_bytes(raw_frame)
+    _edit_log(
+        board,
+        original_snapshot["id"],
+        lambda event: (
+            event["data"].update(sha256=hashlib.sha256(raw).hexdigest(), size_bytes=len(raw))
+            if event.get("type") == "issue_media_added"
+            and event.get("data", {}).get("media_id") == old_entry["id"]
+            else None
+        ),
+    )
+    rebuild_issue_snapshots(board)
+    source_before = _tree(source)
+    original_log = (board / "issues" / "events" / f"{original_snapshot['id']}.jsonl").read_text()
+
+    result = importer.import_project(root, SLUG, source)
+
+    imported = root / "projects" / SLUG / ".lattice"
+    snapshot = _by_title(imported, "Screens")
+    removed = next(m for m in snapshot["media"] if m["id"] == old_entry["id"])
+    replacement = next(
+        m
+        for m in snapshot["media"]
+        if m.get("content_type") == "image/jpeg" and not m.get("removed")
+    )
+    assert removed["removed"]["reason"] == "photo_metadata_removed_on_import"
+    assert replacement["id"] != old_entry["id"] and replacement["n"] > old_entry["n"]
+    stored_path = media_path(imported, snapshot["id"], replacement)
+    assert_no_identifying_metadata(stored_path.read_bytes(), "image/jpeg")
+    assert not media_path(imported, snapshot["id"], old_entry).exists()
+    imported_video = next(
+        m for m in _media(imported) if m.issue_id == repro_snapshot["id"] and m.frames
+    )
+    imported_frame = next(p for p in imported_video.frames if p.name == video.frames[0].name)
+    assert_no_identifying_metadata(imported_frame.read_bytes(), "image/jpeg")
+    assert imported_frame.read_bytes() != raw_frame
+    assert video.frames[0].read_bytes() == raw_frame
+    assert old_path.read_bytes() == raw
+    assert _tree(source) == source_before
+    assert result["photos_sanitized"] == 1
+    assert result["frames_sanitized"] == 1
+    assert result["media_count"] == 4
+    assert result["media_object_count"] == 7
+
+    events = [
+        json.loads(line)
+        for line in (imported / "issues" / "events" / f"{snapshot['id']}.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    source_events = original_log.splitlines()
+    assert [
+        json.dumps(e, sort_keys=True, separators=(",", ":")) for e in events[: len(source_events)]
+    ] == source_events
+    appended = events[len(source_events) :]
+    assert [event["type"] for event in appended] == ["issue_media_removed", "issue_media_added"]
+    assert all(event["actor"] == "system:import" and event["origin"] for event in appended)
+    assert replay_issue(events) == snapshot
+
+
+def test_import_keep_photo_metadata_cli_fallback_preserves_heic(root: Path, source: Path) -> None:
+    from lattice.storage.issues import rebuild_issue_snapshots
+    from tests.issue_media_helpers import heic
+
+    board = source / ".lattice"
+    snapshot = _by_title(board, "Screens")
+    old_entry = next(m for m in snapshot["media"] if m["content_type"] == "image/jpeg")
+    old_path = media_path(board, snapshot["id"], old_entry)
+    assert old_path is not None
+    raw = heic()
+    new_entry = {**old_entry, "content_type": "image/heic", "original_name": "kept.heic"}
+    new_path = media_path(board, snapshot["id"], new_entry)
+    assert new_path is not None
+    old_path.unlink()
+    new_path.write_bytes(raw)
+
+    def edit(event: dict) -> None:
+        if (
+            event.get("type") == "issue_media_added"
+            and event.get("data", {}).get("media_id") == old_entry["id"]
+        ):
+            event["data"].update(
+                content_type="image/heic",
+                original_name="kept.heic",
+                sha256=hashlib.sha256(raw).hexdigest(),
+                size_bytes=len(raw),
+            )
+
+    _edit_log(board, snapshot["id"], edit)
+    rebuild_issue_snapshots(board)
+    source_before = _tree(source)
+
+    refused = _import_cmd(root, source)
+    assert refused.exit_code != 0
+    assert "--keep-photo-metadata" in refused.output
+    _assert_nothing_created(root)
+
+    result = _import_cmd(root, source, keep_photo_metadata=True)
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    imported = root / "projects" / SLUG / ".lattice"
+    imported_snapshot = _by_title(imported, "Screens")
+    kept = next(m for m in imported_snapshot["media"] if m["id"] == old_entry["id"])
+    kept_path = media_path(imported, imported_snapshot["id"], kept)
+    assert kept_path is not None and kept_path.read_bytes() == raw
+    assert data["photos_sanitized"] == data["frames_sanitized"] == 0
+    assert data["media_count"] == 4 and data["media_object_count"] == 7
+    assert _tree(source) == source_before
+
+
+def test_import_help_documents_keep_photo_metadata_fallback() -> None:
+    result = _cli("server", "project", "import", "--help")
+    assert result.exit_code == 0, result.output
+    assert "--keep-photo-metadata" in result.output
 
 
 def test_imported_issue_serves_its_media_and_availability(root: Path, source: Path) -> None:
@@ -337,7 +479,9 @@ def test_omit_media_imports_metadata_only_and_reports_the_inventory(
     imported = root / "projects" / SLUG / ".lattice"
     assert reads  # logs and the rest were read, media was not
     assert result["media_omitted"] is True
-    assert result["media_count"] == 7
+    assert result["media_count"] == 4
+    assert result["media_object_count"] == 7
+    assert result["photos_unchecked"] == 3
     assert result["media_bytes"] == result["media_known_bytes"] == expected_bytes
     assert result["media_unknown_size_count"] == 0
     assert result["media_inventory_complete"] is True
@@ -394,7 +538,8 @@ def test_omit_media_ignores_a_missing_or_corrupt_blob_and_every_quota(
 
     assert (root / "projects" / SLUG / ".lattice" / "issues").is_dir()
     assert not (root / "projects" / SLUG / ".lattice" / "issues" / "media").exists()
-    assert result["media_count"] == 7
+    assert result["media_count"] == 4
+    assert result["media_object_count"] == 7
     assert _tree(source) == before
 
 
@@ -405,7 +550,8 @@ def test_omit_media_reports_unknown_sizes_for_a_missing_original(root: Path, sou
     assert result["media_unknown_size_count"] == 1
     assert result["media_bytes"] is None
     assert result["media_known_bytes"] > 0
-    assert result["media_count"] == 7
+    assert result["media_count"] == 4
+    assert result["media_object_count"] == 7
     assert result["media_inventory_complete"] is True
 
 
@@ -626,7 +772,9 @@ def test_per_file_limit_refuses_naming_the_quota_and_omit_media(
 def test_per_file_limit_at_the_exact_size_passes(root: Path, source: Path) -> None:
     board = source / ".lattice"
     _set_limits(root, max_issue_media_file_bytes=max(p.stat().st_size for p in _objects(board)))
-    assert importer.import_project(root, SLUG, source)["media_count"] == 7
+    result = importer.import_project(root, SLUG, source)
+    assert result["media_count"] == 4
+    assert result["media_object_count"] == 7
 
 
 def test_per_issue_limit_refuses_naming_the_quota_and_omit_media(
@@ -653,7 +801,9 @@ def test_per_issue_limit_at_the_exact_total_passes(root: Path, source: Path) -> 
     board = source / ".lattice"
     biggest = max(_issue_total(board, "Repro"), _issue_total(board, "Screens"))
     _set_limits(root, max_issue_media_issue_bytes=biggest)
-    assert importer.import_project(root, SLUG, source)["media_count"] == 7
+    result = importer.import_project(root, SLUG, source)
+    assert result["media_count"] == 4
+    assert result["media_object_count"] == 7
 
 
 def _stored_bytes(board: Path) -> int:
@@ -689,7 +839,8 @@ def test_project_quota_counts_every_stored_object_even_identical_content(
 
     result = importer.import_project(root, SLUG, source)
 
-    assert result["media_count"] == 7
+    assert result["media_count"] == 4
+    assert result["media_object_count"] == 7
     assert result["media_bytes"] == every_object
 
 
@@ -868,7 +1019,8 @@ def test_unreferenced_media_files_are_not_copied_and_are_listed(root: Path, sour
     for path in _objects(board):
         assert path.relative_to(board).as_posix() not in listed
     assert "issues/media/" not in listed
-    assert result["media_count"] == 7  # strays are not counted
+    assert result["media_count"] == 4  # strays are not counted
+    assert result["media_object_count"] == 7
     assert _tree(source) == before
 
 
@@ -879,7 +1031,8 @@ def test_unreferenced_files_are_unaffected_by_quotas_and_damage(root: Path, sour
     os.mkfifo(media.original.parent / "med_01ARZ3NDEKTSV4RRFFQ69G5FAV.png")
     (media.original.parent / "med_01ARZ3NDEKTSV4RRFFQ69G5FAW.png").symlink_to("/etc/hosts")
     result = importer.import_project(root, SLUG, source)
-    assert result["media_count"] == 7
+    assert result["media_count"] == 4
+    assert result["media_object_count"] == 7
     imported = root / "projects" / SLUG / ".lattice" / "issues" / "media"
     assert sorted(p.name for p in imported.rglob("*") if p.is_file()) == sorted(
         p.name for p in _objects(board)
@@ -893,7 +1046,8 @@ def test_omit_media_lists_every_media_path_as_not_copied(root: Path, source: Pat
     listed = {row["path"] for row in result["not_copied"]}
     for path in [*strays, *(p.relative_to(board).as_posix() for p in _objects(board))]:
         assert path in listed, path
-    assert result["media_count"] == 7  # strays are not referenced, so not counted
+    assert result["media_count"] == 4  # strays are not referenced, so not counted
+    assert result["media_object_count"] == 7
 
 
 BAD_HASHES = [
@@ -972,7 +1126,8 @@ def test_a_removed_media_entry_is_not_read_or_copied(root: Path, source: Path) -
 
     result = importer.import_project(root, SLUG, source)
 
-    assert result["media_count"] == 6
+    assert result["media_count"] == 3
+    assert result["media_object_count"] == 6
     imported = root / "projects" / SLUG / ".lattice"
     assert not media_path(imported, screens["id"], detached).exists()
 
@@ -992,7 +1147,8 @@ def test_cli_default_import_report(root: Path, source: Path) -> None:
     data = json.loads(result.output)["data"]
     assert data["slug"] == SLUG
     assert data["media_omitted"] is False
-    assert data["media_count"] == 7
+    assert data["media_count"] == 4
+    assert data["media_object_count"] == 7
     assert data["media_bytes"] == data["media_known_bytes"] == total
     assert data["media_unknown_size_count"] == 0
     assert data["media_inventory_complete"] is True
@@ -1014,7 +1170,9 @@ def test_cli_omit_media_report(root: Path, source: Path) -> None:
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)["data"]
     assert data["media_omitted"] is True
-    assert data["media_count"] == 7
+    assert data["media_count"] == 4
+    assert data["media_object_count"] == 7
+    assert data["photos_unchecked"] == 3
     assert data["media_bytes"] == data["media_known_bytes"] == total
     assert data["media_unknown_size_count"] == 0
     assert data["media_inventory_complete"] is True
@@ -1025,6 +1183,7 @@ def test_cli_omit_media_report(root: Path, source: Path) -> None:
     human = _import_cmd(human_root, source, omit_media=True, as_json=False)
     assert human.exit_code == 0, human.output
     assert "Media omitted (--omit-media): 7 objects" in human.output
+    assert "Photo metadata unchecked (--omit-media): 3 photos." in human.output
     assert "0 unknown-size objects" in human.output
     assert "Media copied" not in human.output
 

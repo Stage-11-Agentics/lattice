@@ -38,6 +38,27 @@ def png(width: int = 3, height: int = 2) -> bytes:
     )
 
 
+def png_with_large_icc(size: int, seed: int = 0) -> bytes:
+    """A valid, synthetic PNG with a large color profile for quota tests."""
+    import random
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    ihdr = struct.pack(">IIBBBBB", 3, 2, 8, 2, 0, 0, 0)
+    raw = b"".join(b"\x00" + b"\x00\x00\x00" * 3 for _ in range(2))
+    profile = b"test profile\0\0" + zlib.compress(random.Random(seed).randbytes(size))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"iCCP", profile)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
 def jpeg(width: int = 64, height: int = 48) -> bytes:
     """SOI, SOF0, EOI: sniffable and sized, not decodable."""
     return (

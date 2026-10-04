@@ -191,10 +191,20 @@ def project_create(
     is_flag=True,
     help="Import issue metadata without reading or copying issue media bytes.",
 )
+@click.option(
+    "--keep-photo-metadata",
+    is_flag=True,
+    help="Keep malformed JPEG/PNG and HEIC originals when the importer cannot sanitize them.",
+)
 @_root_option
 @_json_option
 def project_import(
-    slug: str, source: Path, omit_media: bool, root: str | None, is_json: bool
+    slug: str,
+    source: Path,
+    omit_media: bool,
+    keep_photo_metadata: bool,
+    root: str | None,
+    is_json: bool,
 ) -> None:
     """Import a local board as a new project; the source is never modified.
 
@@ -223,9 +233,9 @@ def project_import(
         ]
         if data["media_omitted"]:
             count_label = (
-                f"at least {data['media_count']} objects"
+                f"at least {data['media_object_count']} objects"
                 if not data["media_inventory_complete"]
-                else f"{data['media_count']} objects"
+                else f"{data['media_object_count']} objects"
             )
             lines.append(
                 f"Media omitted (--omit-media): {count_label}; "
@@ -234,13 +244,22 @@ def project_import(
             )
             if not data["media_inventory_complete"]:
                 lines.append("  Frame-sidecar inventory is incomplete.")
+            lines.append(
+                f"Photo metadata unchecked (--omit-media): {data['photos_unchecked']} photos."
+            )
         elif data["media_count"]:
             lines.append(
-                f"Media copied: {data['media_count']} objects, {format_size(data['media_bytes'])}."
+                f"Media copied: {data['media_object_count']} objects across "
+                f"{data['media_count']} originals, {format_size(data['media_bytes'])}."
             )
         else:
             lines.append("Media copied: no referenced objects.")
         lines += [f"  {f['level']}: {f['message']}" for f in data["doctor"]["findings"]]
+        if data["photos_sanitized"] or data["frames_sanitized"]:
+            lines.append(
+                f"Photo metadata removed: {data['photos_sanitized']} originals, "
+                f"{data['frames_sanitized']} JPEG frames."
+            )
         lines.append("")
         if data["not_copied"]:
             lines.append(f"Not copied ({len(data['not_copied'])}; they stay in the old board):")
@@ -268,7 +287,13 @@ def project_import(
 
     _run(
         is_json,
-        lambda: import_project(_root(root), slug, source.absolute(), omit_media=omit_media),
+        lambda: import_project(
+            _root(root),
+            slug,
+            source.absolute(),
+            omit_media=omit_media,
+            keep_photo_metadata=keep_photo_metadata,
+        ),
         render,
     )
 

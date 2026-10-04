@@ -1245,12 +1245,20 @@ async def _stage_upload(
             raise OpError(
                 "ISSUES_DISABLED", hosted_issues_disabled_message(existing, project.slug)
             )
+        keep_header = request.headers.get("x-lattice-keep-photo-metadata")
+        if keep_header is not None and keep_header.strip().lower() != "true":
+            raise OpError(
+                "VALIDATION_ERROR",
+                "X-Lattice-Keep-Photo-Metadata must be omitted or set to true.",
+            )
+        keep_photo_metadata = keep_header is not None
         upload = await in_worker(
             lambda: project.issue_media.begin_upload(
                 sha256,
                 size,
                 token_id=token.id,
                 max_staged_bytes=token.effective_max_staged_bytes(),
+                keep_photo_metadata=keep_photo_metadata,
             )
         )
         while (chunk := await body.next()) is not None:

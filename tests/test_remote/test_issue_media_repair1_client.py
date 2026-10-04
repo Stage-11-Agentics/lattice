@@ -56,9 +56,11 @@ def _params(content: bytes, name: str = "shot.png") -> dict:
 
 def _staged(content: bytes) -> dict:
     return {
+        "upload_sha256": hashlib.sha256(content).hexdigest(),
         "sha256": hashlib.sha256(content).hexdigest(),
         "size_bytes": len(content),
         "content_type": "image/png",
+        "photo_metadata_status": "stripped",
         "staged": True,
     }
 
@@ -108,13 +110,18 @@ def upload_server(answers: list[Any]) -> Iterator[dict]:
     listen.bind(("127.0.0.1", 0))
     listen.listen(8)
     listen.settimeout(0.1)
-    seen: dict[str, Any] = {"paths": [], "url": f"http://127.0.0.1:{listen.getsockname()[1]}"}
+    seen: dict[str, Any] = {
+        "paths": [],
+        "heads": [],
+        "url": f"http://127.0.0.1:{listen.getsockname()[1]}",
+    }
     stop = threading.Event()
 
     def serve(conn: socket.socket) -> None:
         try:
             head, _body = _read_request(conn)
             seen["paths"].append(head.split(b"\r\n", 1)[0].decode())
+            seen["heads"].append(head)
             answer = answers[min(len(seen["paths"]) - 1, len(answers) - 1)]
             if answer != "drop":
                 conn.sendall(_envelope(*answer))
@@ -162,6 +169,51 @@ def test_a_dropped_upload_answer_is_retried_with_the_same_object(
     }
     err = capsys.readouterr().err
     assert "lattice: server team (" in err and "is not available; retrying for up to 2 s" in err
+
+
+def test_staging_client_uses_canonical_hash_and_explicit_keep_header() -> None:
+    content = (
+        b"\xff\xd8\xff\xe1\x00\x20Exif"  # malformed JPEG, allowed only by both explicit flags
+    )
+    raw = hashlib.sha256(content).hexdigest()
+    staged = {
+        "upload_sha256": raw,
+        "sha256": raw,
+        "size_bytes": len(content),
+        "content_type": "image/jpeg",
+        "photo_metadata_status": "kept",
+        "staged": True,
+    }
+    params = {**_params(content), "keep_photo_metadata": True}
+    with upload_server([(201, {"ok": True, "data": staged})]) as server:
+        result = client.stage_issue_media(_remote(server["url"]), PROJECT, params)
+    assert result["media"][0]["payload"]["sha256"] == raw
+    assert result["keep_photo_metadata"] is True
+    assert b"x-lattice-keep-photo-metadata: true" in server["heads"][0].lower()
+
+
+def test_staging_client_places_canonical_metadata_in_operation_payload() -> None:
+    from tests.photo_metadata_helpers import jpeg_with_gps
+    from lattice.core.issue_media import strip_photo_metadata
+
+    content = jpeg_with_gps()
+    clean = strip_photo_metadata(content, "image/jpeg")
+    response = {
+        "upload_sha256": hashlib.sha256(content).hexdigest(),
+        "sha256": hashlib.sha256(clean).hexdigest(),
+        "size_bytes": len(clean),
+        "content_type": "image/jpeg",
+        "photo_metadata_status": "stripped",
+        "staged": True,
+    }
+    with upload_server([(201, {"ok": True, "data": response})]) as server:
+        result = client.stage_issue_media(_remote(server["url"]), PROJECT, _params(content))
+    assert result["media"][0]["payload"] == {
+        "filename": "shot.png",
+        "sha256": hashlib.sha256(clean).hexdigest(),
+        "size": len(clean),
+        "staged": True,
+    }
 
 
 def test_an_upload_that_never_connects_gives_up_in_plain_words() -> None:

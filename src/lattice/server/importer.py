@@ -37,13 +37,23 @@ import os
 import re
 import shutil
 import stat
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from lattice.core.errors import OpError
-from lattice.core.ids import generate_instance_id, validate_id
-from lattice.core.issue_media import format_size, media_ext, parse_frame_name, sniff_media
-from lattice.core.issues import replay_issue, validate_issue_media_hashes
+from lattice.core.events import create_issue_event
+from lattice.core.ids import generate_instance_id, generate_media_id, generate_op_id, validate_id
+from lattice.core.issue_media import (
+    PhotoMetadataError,
+    format_size,
+    media_ext,
+    next_media_n,
+    parse_frame_name,
+    sniff_media,
+    strip_photo_metadata,
+)
+from lattice.core.issues import apply_issue_event, replay_issue, validate_issue_media_hashes
 from lattice.server.admin import (
     _create_audit_repo,
     admin_lock,
@@ -57,7 +67,7 @@ from lattice.server.journal import HOSTED_DIR
 from lattice.storage.fs import LATTICE_DIR, atomic_write, ensure_dir
 from lattice.storage.issue_media import frames_dir, media_path, store_media
 from lattice.storage.integrity import DoctorReport, check_board, repair_task_derived_files
-from lattice.storage.issues import rebuild_issue_snapshots
+from lattice.storage.issues import read_issue_events, rebuild_issue_snapshots, write_issue_events
 from lattice.storage.operations import AuthoritativeLogError
 from lattice.storage.ownership import (
     PathClass,
@@ -143,6 +153,17 @@ class _Scan:
 
 
 @dataclass(frozen=True)
+class _MediaFrame:
+    t_ms: int
+    path: str
+    source_sha256: str
+    source_size: int
+    stored_sha256: str
+    stored_size: int
+    spool_path: Path | None
+
+
+@dataclass(frozen=True)
 class _MediaSource:
     issue_id: str
     media_id: str
@@ -150,16 +171,28 @@ class _MediaSource:
     original_path: str
     original_sha256: str
     original_size: int
-    frames: tuple[tuple[int, str, str, int], ...]
+    stored_sha256: str
+    stored_size: int
+    original_name: str | None
+    n: int
+    width: int | None
+    height: int | None
+    converted_from: dict | None
+    spool_path: Path | None
+    frames: tuple[_MediaFrame, ...]
 
 
 @dataclass(frozen=True)
 class _MediaInventory:
     sources: tuple[_MediaSource, ...]
     media_count: int
+    media_object_count: int
     media_known_bytes: int
     media_unknown_size_count: int
     media_inventory_complete: bool
+    photos_sanitized: int = 0
+    frames_sanitized: int = 0
+    photos_unchecked: int = 0
 
     @property
     def media_bytes(self) -> int | None:
@@ -224,7 +257,7 @@ def _file_bytes_for_preflight(
     expected_sha256: str | None,
     expected_size: int | None,
     expected_type: str,
-) -> tuple[str, int]:
+) -> tuple[str, int, bytes]:
     identity = scan.entries.get(relative)
     if identity is None:
         raise _media_refusal(relative, "is missing")
@@ -241,7 +274,30 @@ def _file_bytes_for_preflight(
         raise _media_refusal(relative, "does not match the SHA-256 recorded in issue metadata")
     if sniff_media(content[:64]) != expected_type:
         raise _media_refusal(relative, f"does not have the recorded {expected_type} content type")
-    return digest, len(content)
+    return digest, len(content), content
+
+
+def _spool_bytes(spool: Path, content: bytes) -> Path:
+    """Write transformed media once into the import's private temporary spool."""
+    digest = hashlib.sha256(content).hexdigest()
+    path = spool / f"{digest}.blob"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        if path.read_bytes() != content:
+            raise OpError("INTEGRITY_ERROR", "private import media spool hash collision")
+        return path
+    try:
+        view = memoryview(content)
+        while view:
+            view = view[os.write(fd, view) :]
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        path.unlink(missing_ok=True)
+        raise
+    os.close(fd)
+    return path
 
 
 def _direct_children(scan: _Scan, directory: str) -> list[tuple[str, _Identity]]:
@@ -262,12 +318,17 @@ def _preflight_media_copy(
     source_board: Path,
     snapshots: list[dict],
     limits,
+    spool: Path,
+    *,
+    keep_photo_metadata: bool,
 ) -> _MediaInventory:
-    """Verify every referenced original/frame and enforce import quotas before writes."""
+    """Verify, sanitize, spool, and quota-check every referenced original/frame."""
     sources: list[_MediaSource] = []
     issue_totals: dict[str, int] = {}
     project_hash_sizes: dict[str, int] = {}
     object_sizes: list[tuple[str, str, int]] = []
+    photos_sanitized = 0
+    frames_sanitized = 0
 
     for snapshot in snapshots:
         issue_id = snapshot["id"]
@@ -289,7 +350,7 @@ def _preflight_media_copy(
             ):
                 raise _media_refusal(f"{issue_id}/{media_id}", "has invalid issue metadata")
             original, frame_directory = _media_relative_paths(source_board, issue_id, entry)
-            original_sha, original_size = _file_bytes_for_preflight(
+            original_sha, original_size, original_content = _file_bytes_for_preflight(
                 lattice_fd,
                 scan,
                 original,
@@ -297,7 +358,32 @@ def _preflight_media_copy(
                 expected_size=size,
                 expected_type=content_type,
             )
-            frame_rows: list[tuple[int, str, str, int]] = []
+            stored_content = original_content
+            original_spool: Path | None = None
+            if content_type in {"image/jpeg", "image/png"}:
+                try:
+                    stored_content = strip_photo_metadata(original_content, content_type)
+                except PhotoMetadataError as exc:
+                    if not keep_photo_metadata:
+                        raise _media_refusal(
+                            original,
+                            "could not be sanitized; repair it or rerun with "
+                            "--keep-photo-metadata to retain the original",
+                            code="VALIDATION_ERROR",
+                        ) from exc
+                if stored_content != original_content:
+                    original_spool = _spool_bytes(spool, stored_content)
+                    photos_sanitized += 1
+            elif content_type == "image/heic" and not keep_photo_metadata:
+                raise _media_refusal(
+                    original,
+                    "is HEIC and cannot be converted by the importer; rerun with "
+                    "--keep-photo-metadata to retain it",
+                    code="VALIDATION_ERROR",
+                )
+            stored_sha = hashlib.sha256(stored_content).hexdigest()
+            stored_size = len(stored_content)
+            frame_rows: list[_MediaFrame] = []
             frame_identity = scan.entries.get(frame_directory)
             if frame_identity is not None:
                 if frame_identity[1].kind != "dir":
@@ -310,7 +396,7 @@ def _preflight_media_copy(
                         raise _media_refusal(
                             frame_path, "is a symbolic link or not a regular file"
                         )
-                    frame_hash, frame_size = _file_bytes_for_preflight(
+                    frame_hash, frame_size, frame_content = _file_bytes_for_preflight(
                         lattice_fd,
                         scan,
                         frame_path,
@@ -318,7 +404,32 @@ def _preflight_media_copy(
                         expected_size=None,
                         expected_type="image/jpeg",
                     )
-                    frame_rows.append((t_ms, frame_path, frame_hash, frame_size))
+                    clean_frame = frame_content
+                    frame_spool: Path | None = None
+                    try:
+                        clean_frame = strip_photo_metadata(frame_content, "image/jpeg")
+                    except PhotoMetadataError as exc:
+                        if not keep_photo_metadata:
+                            raise _media_refusal(
+                                frame_path,
+                                "could not be sanitized; repair it or rerun with "
+                                "--keep-photo-metadata to retain it",
+                                code="VALIDATION_ERROR",
+                            ) from exc
+                    if clean_frame != frame_content:
+                        frame_spool = _spool_bytes(spool, clean_frame)
+                        frames_sanitized += 1
+                    frame_rows.append(
+                        _MediaFrame(
+                            t_ms,
+                            frame_path,
+                            frame_hash,
+                            frame_size,
+                            hashlib.sha256(clean_frame).hexdigest(),
+                            len(clean_frame),
+                            frame_spool,
+                        )
+                    )
 
             sources.append(
                 _MediaSource(
@@ -328,11 +439,19 @@ def _preflight_media_copy(
                     original,
                     original_sha,
                     original_size,
+                    stored_sha,
+                    stored_size,
+                    entry.get("original_name"),
+                    int(entry.get("n") or 0),
+                    entry.get("width"),
+                    entry.get("height"),
+                    entry.get("converted_from"),
+                    original_spool,
                     tuple(frame_rows),
                 )
             )
-            items = [(original, original_sha, original_size)] + [
-                (path, digest, frame_size) for _t_ms, path, digest, frame_size in frame_rows
+            items = [(original, stored_sha, stored_size)] + [
+                (frame.path, frame.stored_sha256, frame.stored_size) for frame in frame_rows
             ]
             issue_totals[issue_id] = issue_totals.get(issue_id, 0) + sum(
                 item_size for _path, _digest, item_size in items
@@ -371,10 +490,13 @@ def _preflight_media_copy(
 
     return _MediaInventory(
         tuple(sources),
+        len(sources),
         len(object_sizes),
         sum(size for _path, _digest, size in object_sizes),
         0,
         True,
+        photos_sanitized,
+        frames_sanitized,
     )
 
 
@@ -403,6 +525,8 @@ def _inventory_media_omit(
 ) -> _MediaInventory:
     """Report media paths using lstat identities only; never opens or hashes bytes."""
     media_count = 0
+    media_object_count = 0
+    photos_unchecked = 0
     known_bytes = unknown = 0
     complete = True
     for snapshot in snapshots:
@@ -412,6 +536,9 @@ def _inventory_media_omit(
                 continue
             original, frame_directory = _media_relative_paths(source_board, issue_id, entry)
             media_count += 1
+            media_object_count += 1
+            if entry.get("content_type") in {"image/jpeg", "image/png", "image/heic"}:
+                photos_unchecked += 1
             identity = scan.entries.get(original)
             if identity is not None and identity[1].kind == "file":
                 known_bytes += identity[1].size
@@ -430,44 +557,120 @@ def _inventory_media_omit(
                 complete = False
                 continue
             for _path, child in _direct_children(scan, frame_directory):
-                media_count += 1
+                media_object_count += 1
                 if child.kind == "file":
                     known_bytes += child.size
                 else:
                     unknown += 1
-    return _MediaInventory((), media_count, known_bytes, unknown, complete)
+    return _MediaInventory(
+        (),
+        media_count,
+        media_object_count,
+        known_bytes,
+        unknown,
+        complete,
+        photos_unchecked=photos_unchecked,
+    )
 
 
 def _copy_preflighted_media(
-    lattice_fd: int, scan: _Scan, board: Path, inventory: _MediaInventory
+    lattice_fd: int,
+    scan: _Scan,
+    board: Path,
+    inventory: _MediaInventory,
 ) -> set[str]:
-    """Copy already-verified references, checking each source again against preflight."""
+    """Copy verified media, then append import-only identity changes for sanitized photos."""
     copied_paths = set()
+    changed_by_issue: dict[str, list[tuple[_MediaSource, str]]] = {}
     for source in inventory.sources:
-        original = _read_file(lattice_fd, source.original_path, scan)
+        original_raw = _read_file(lattice_fd, source.original_path, scan)
         if (
-            len(original) != source.original_size
-            or hashlib.sha256(original).hexdigest() != source.original_sha256
+            len(original_raw) != source.original_size
+            or hashlib.sha256(original_raw).hexdigest() != source.original_sha256
         ):
             raise _changed(source.original_path)
+        original = source.spool_path.read_bytes() if source.spool_path else original_raw
+        if (
+            len(original) != source.stored_size
+            or hashlib.sha256(original).hexdigest() != source.stored_sha256
+        ):
+            raise OpError("INTEGRITY_ERROR", "private import media spool failed verification")
+        destination_id = generate_media_id() if source.spool_path else source.media_id
         frames = []
-        for t_ms, path, expected_hash, expected_size in source.frames:
-            content = _read_file(lattice_fd, path, scan)
+        for frame in source.frames:
+            source_content = _read_file(lattice_fd, frame.path, scan)
             if (
-                len(content) != expected_size
-                or hashlib.sha256(content).hexdigest() != expected_hash
+                len(source_content) != frame.source_size
+                or hashlib.sha256(source_content).hexdigest() != frame.source_sha256
             ):
-                raise _changed(path)
-            frames.append((t_ms, content))
+                raise _changed(frame.path)
+            content = frame.spool_path.read_bytes() if frame.spool_path else source_content
+            if (
+                len(content) != frame.stored_size
+                or hashlib.sha256(content).hexdigest() != frame.stored_sha256
+            ):
+                raise OpError("INTEGRITY_ERROR", "private import frame spool failed verification")
+            frames.append((frame.t_ms, content))
         store_media(
             board,
             source.issue_id,
-            {"id": source.media_id, "content_type": source.content_type},
+            {"id": destination_id, "content_type": source.content_type},
             original,
             frames,
         )
         copied_paths.add(source.original_path)
-        copied_paths.update(path for _t_ms, path, _hash, _size in source.frames)
+        copied_paths.update(frame.path for frame in source.frames)
+        if source.spool_path is not None:
+            changed_by_issue.setdefault(source.issue_id, []).append((source, destination_id))
+
+    import_origin = {
+        "op": "server.project.import",
+        "op_id": generate_op_id(),
+        "reported": {},
+    }
+    for issue_id, changed in changed_by_issue.items():
+        events = read_issue_events(board, issue_id)
+        snapshot = replay_issue(events)
+        if snapshot is None:
+            raise OpError("INTEGRITY_ERROR", f"Import refused: issue {issue_id} has no event log.")
+        appended = []
+        for source, media_id in changed:
+            remove_event = create_issue_event(
+                "issue_media_removed",
+                issue_id,
+                "system:import",
+                {
+                    "media_id": source.media_id,
+                    "n": source.n,
+                    "reason": "photo_metadata_removed_on_import",
+                },
+            )
+            remove_event["origin"] = import_origin
+            snapshot = apply_issue_event(snapshot, remove_event)
+            appended.append(remove_event)
+            add_data = {
+                "media_id": media_id,
+                "n": next_media_n(snapshot),
+                "kind": "photo",
+                "content_type": source.content_type,
+                "size_bytes": source.stored_size,
+                "sha256": source.stored_sha256,
+            }
+            if source.original_name is not None:
+                add_data["original_name"] = source.original_name
+            if source.width is not None:
+                add_data["width"] = source.width
+            if source.height is not None:
+                add_data["height"] = source.height
+            if source.converted_from is not None:
+                add_data["converted_from"] = source.converted_from
+            add_event = create_issue_event(
+                "issue_media_added", issue_id, "system:import", add_data
+            )
+            add_event["origin"] = import_origin
+            snapshot = apply_issue_event(snapshot, add_event)
+            appended.append(add_event)
+        write_issue_events(board, issue_id, appended, snapshot)
     return copied_paths
 
 
@@ -747,7 +950,14 @@ def _move_steps(slug: str) -> list[dict]:
     ]
 
 
-def import_project(root: Path, slug: str, source: Path, *, omit_media: bool = False) -> dict:
+def import_project(
+    root: Path,
+    slug: str,
+    source: Path,
+    *,
+    omit_media: bool = False,
+    keep_photo_metadata: bool = False,
+) -> dict:
     """Import the board at ``<source>/.lattice/`` as project *slug* (SPEC §11)."""
     root = Path(root)
     check_slug(slug)
@@ -763,17 +973,26 @@ def import_project(root: Path, slug: str, source: Path, *, omit_media: bool = Fa
     source = Path(source)
     lattice_fd = _open_source(source)
     staging: Path | None = None
+    spool: Path | None = None
     try:
         scan = _scan(lattice_fd, tolerate_media_errors=omit_media)
         source_board = source / LATTICE_DIR
         snapshots = _issue_snapshots_for_import(lattice_fd, scan, source_board)
         media_inventory = (
-            _inventory_media_omit(scan, source_board, snapshots)
-            if omit_media
-            else _preflight_media_copy(
-                lattice_fd, scan, source_board, snapshots, server_config.limits
-            )
+            _inventory_media_omit(scan, source_board, snapshots) if omit_media else None
         )
+        if not omit_media:
+            spool = Path(tempfile.mkdtemp(prefix=".import-media-", dir=root / PROJECTS_DIR))
+            media_inventory = _preflight_media_copy(
+                lattice_fd,
+                scan,
+                source_board,
+                snapshots,
+                server_config.limits,
+                spool,
+                keep_photo_metadata=keep_photo_metadata,
+            )
+        assert media_inventory is not None
         # The media preflight is deliberately complete before this first project
         # directory or imported file is written.
         _source_unchanged(source, scan, tolerate_media_errors=omit_media)
@@ -831,6 +1050,8 @@ def import_project(root: Path, slug: str, source: Path, *, omit_media: bool = Fa
             shutil.rmtree(staging, ignore_errors=True)
         raise
     finally:
+        if spool is not None:
+            shutil.rmtree(spool, ignore_errors=True)
         os.close(lattice_fd)
 
     return {
@@ -841,14 +1062,19 @@ def import_project(root: Path, slug: str, source: Path, *, omit_media: bool = Fa
         "epoch": journal.epoch,
         "head_seq": 0,
         "audit": audit_state,
-        "copied": len(scan.copied_files) + (0 if omit_media else media_inventory.media_count),
+        "copied": len(scan.copied_files)
+        + (0 if omit_media else media_inventory.media_object_count),
         "not_copied": _not_copied(scan, copied_media_paths),
         "media_omitted": omit_media,
         "media_count": media_inventory.media_count,
+        "media_object_count": media_inventory.media_object_count,
         "media_bytes": media_inventory.media_bytes,
         "media_known_bytes": media_inventory.media_known_bytes,
         "media_unknown_size_count": media_inventory.media_unknown_size_count,
         "media_inventory_complete": media_inventory.media_inventory_complete,
+        "photos_sanitized": media_inventory.photos_sanitized,
+        "frames_sanitized": media_inventory.frames_sanitized,
+        "photos_unchecked": media_inventory.photos_unchecked,
         "non_canonical": _non_canonical(scan),
         "doctor": {
             "findings": findings,
