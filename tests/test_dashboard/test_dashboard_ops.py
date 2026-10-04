@@ -24,6 +24,7 @@ from lattice.dashboard.server import create_server, origin_allowed
 from lattice.ops import Caller
 
 OP_ID = re.compile(r"^op_[0-9A-HJKMNP-TV-Z]{26}$")
+_NO_BODY = object()
 
 
 @pytest.fixture()
@@ -47,7 +48,7 @@ def request(
     port: int,
     method: str,
     path: str,
-    body: object = None,
+    body: object = _NO_BODY,
     *,
     origin: str | None = "same",
     host: str | None = None,
@@ -62,8 +63,11 @@ def request(
     elif origin is not None:
         headers["Origin"] = origin
     data = None
-    if body is not None:
-        data = json.dumps(body).encode()
+    if body is not _NO_BODY:
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        headers["Content-Type"] = content_type
+    elif method == "POST":
+        data = b""
         headers["Content-Type"] = content_type
     conn.request(method, path, body=data, headers=headers)
     resp = conn.getresponse()
@@ -217,6 +221,41 @@ class TestRequestChecks:
         status, body = post(port, f"/api/tasks/{ids['backlog']}/comment", ["x"])
         assert status == 400
         assert body["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_every_registered_post_route_rejects_non_object_json(self, dash):
+        port, ld, ids = dash
+        config = json.loads((ld / "config.json").read_text())
+        config["issues"] = {**config.get("issues", {}), "enabled": True}
+        (ld / "config.json").write_text(json.dumps(config))
+        before = board_bytes(ld)
+        bodies = (None, 7, ["x"], "x")
+        for route_template in api.JSON_POST_ROUTE_TEMPLATES:
+            path = route_template.replace("{task_id}", ids["backlog"]).replace(
+                "{issue_id}", "LAT-I1"
+            )
+            for body in bodies:
+                status, response = post(port, path, body)
+                assert status == 400, (route_template, body)
+                assert response == {
+                    "ok": False,
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "Request body must be a JSON object",
+                    },
+                }
+        assert board_bytes(ld) == before
+
+    def test_empty_and_malformed_json_have_distinct_errors(self, dash):
+        port, _ld, ids = dash
+        for raw_body, message in (
+            (b"", "Empty request body"),
+            (b"{", "Invalid JSON in request body"),
+        ):
+            status, response = request(
+                port, "POST", f"/api/tasks/{ids['backlog']}/comment", raw_body
+            )
+            assert status == 400
+            assert response["error"] == {"code": "BAD_REQUEST", "message": message}
 
     @pytest.mark.parametrize(
         ("origin", "host", "bound", "allowed"),

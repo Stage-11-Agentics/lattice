@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import threading
+import os
 import json
+import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,32 @@ def _ready(board: LocalBoard, title: str = "T", **fields) -> str:  # noqa: ANN00
     task_id = _run(board, "task.create", {"title": title, **fields}).value["id"]
     (board.lattice_dir / "plans" / f"{task_id}.md").write_text(f"# {title}\n\nDo the thing.\n")
     return task_id
+
+
+def _planned_unassigned(board: LocalBoard, title: str = "planned") -> str:
+    task_id = _ready(board, title)
+    _run(board, "task.status", {"task": task_id, "new_status": "in_planning"})
+    _run(board, "task.status", {"task": task_id, "new_status": "planned"})
+    _run(board, "task.assign", {"task": task_id, "actor_id": "none"})
+    return task_id
+
+
+def _record_remote_plan_review(
+    board: LocalBoard, task_id: str, *, spawned_at: str | None = None
+) -> None:
+    board.execute(
+        "task.record_auto_review",
+        {
+            "task": task_id,
+            "review_type": "plan-review",
+            "mode": "single",
+            "log_path": ".lattice/.daemon/auto-plan-review-test.log",
+            "spawned_at": spawned_at or datetime.now(timezone.utc).isoformat(),
+            "pid": 12345,
+            "trigger_status_event_id": "ev_planned",
+        },
+        Caller(actor="agent:lattice-auto-review", origin={"reported": {"host": "review-host"}}),
+    )
 
 
 class TestNextClaim:
@@ -67,6 +95,126 @@ class TestNextClaim:
         assert exc.value.code == "PLAN_REQUIRED"
         assert exc.value.details["snapshot"]["id"] == task_id
         assert exc.value.message.endswith("No assignment or status change was made.")
+
+    def test_live_plan_review_returns_no_claim_without_falling_through(
+        self, board: LocalBoard
+    ) -> None:
+        selected = _ready(board, "reviewing", priority="high")
+        fallback = _ready(board, "next", priority="low")
+        for task_id in (selected, fallback):
+            _run(board, "task.status", {"task": task_id, "new_status": "in_planning"})
+            _run(board, "task.status", {"task": task_id, "new_status": "planned"})
+            _run(board, "task.assign", {"task": task_id, "actor_id": "none"})
+
+        state_dir = board.lattice_dir / "review_state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / f"{selected}.json").write_text(
+            json.dumps(
+                {
+                    "task_id": selected,
+                    "review_type": "plan-review",
+                    "status": "running",
+                    "started_by_pid": os.getpid(),
+                }
+            )
+        )
+        selected_events = (board.lattice_dir / "events" / f"{selected}.jsonl").read_bytes()
+        fallback_events = (board.lattice_dir / "events" / f"{fallback}.jsonl").read_bytes()
+
+        result = _run(board, "board.next_claim", {"status": "planned"}, actor="agent:a")
+
+        selected_snapshot = json.loads(
+            (board.lattice_dir / "tasks" / f"{selected}.json").read_text()
+        )
+        fallback_snapshot = json.loads(
+            (board.lattice_dir / "tasks" / f"{fallback}.json").read_text()
+        )
+        assert result.value == {
+            "task": selected_snapshot,
+            "claimed": False,
+            "reason": "PLAN_REVIEW_IN_FLIGHT",
+        }
+        assert result.task["id"] == selected
+        assert result.events == []
+        assert selected_snapshot["status"] == "planned"
+        assert selected_snapshot["assigned_to"] is None
+        assert (board.lattice_dir / "events" / f"{selected}.jsonl").read_bytes() == selected_events
+        assert fallback_snapshot["status"] == "planned"
+        assert fallback_snapshot["assigned_to"] is None
+        assert (board.lattice_dir / "events" / f"{fallback}.jsonl").read_bytes() == fallback_events
+
+    @pytest.mark.parametrize(
+        ("status", "owner"),
+        [
+            ("done", "live"),
+            ("failed", "live"),
+            ("abandoned", "live"),
+            ("running", "dead"),
+        ],
+    )
+    def test_terminal_or_abandoned_local_review_does_not_block_claim(
+        self, board: LocalBoard, status: str, owner: str
+    ) -> None:
+        task_id = _planned_unassigned(board)
+        state_dir = board.lattice_dir / "review_state"
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / f"{task_id}.json").write_text(
+            json.dumps(
+                {
+                    "task_id": task_id,
+                    "review_type": "plan-review",
+                    "status": status,
+                    "started_by_pid": os.getpid() if owner == "live" else 2_000_000_000,
+                }
+            )
+        )
+
+        result = _run(board, "board.next_claim", {"status": "planned"}, actor="agent:claimer")
+
+        assert result.value["id"] == task_id
+        assert result.value["status"] == "in_progress"
+        assert result.value["assigned_to"] == "agent:claimer"
+        assert [event["type"] for event in result.events] == [
+            "assignment_changed",
+            "status_changed",
+        ]
+
+    def test_remote_live_plan_review_has_the_same_no_claim_result(self, board: LocalBoard) -> None:
+        task_id = _planned_unassigned(board)
+        _record_remote_plan_review(board, task_id)
+
+        result = _run(board, "board.next_claim", {"status": "planned"}, actor="agent:claimer")
+
+        assert result.value["task"]["id"] == task_id
+        assert result.value["claimed"] is False
+        assert result.value["reason"] == "PLAN_REVIEW_IN_FLIGHT"
+        assert result.task["status"] == "planned"
+        assert result.task["assigned_to"] is None
+        assert result.events == []
+
+    @pytest.mark.parametrize("completion", ["expired", "artifact"])
+    def test_remote_failed_or_completed_plan_review_does_not_block_claim(
+        self, board: LocalBoard, completion: str
+    ) -> None:
+        task_id = _planned_unassigned(board)
+        spawned_at = (
+            (datetime.now(timezone.utc) - timedelta(seconds=601)).isoformat()
+            if completion == "expired"
+            else None
+        )
+        _record_remote_plan_review(board, task_id, spawned_at=spawned_at)
+        if completion == "artifact":
+            board.execute(
+                "task.attach",
+                {"task": task_id, "inline": "Review complete", "role": "plan-review"},
+                Caller(actor="agent:reviewer"),
+            )
+
+        result = _run(board, "board.next_claim", {"status": "planned"}, actor="agent:claimer")
+
+        assert result.value["id"] == task_id
+        assert result.value["status"] == "in_progress"
+        assert result.value["assigned_to"] == "agent:claimer"
 
     def test_missing_plan_backlog_claim_stops_in_planning(self, board: LocalBoard) -> None:
         task_id = _run(board, "task.create", {"title": "Unplanned"}).value["id"]

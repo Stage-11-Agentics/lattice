@@ -918,6 +918,44 @@ def apply_activity_filters(
 # ---------------------------------------------------------------------------
 
 
+# The registry is the source of truth for JSON POST paths. HTTP handlers match
+# and validate against it before any route-specific work; tests expand this
+# same inventory so a newly dispatched route joins the non-object matrix.
+JSON_POST_ROUTE_TEMPLATES = (
+    "/api/config/dashboard",
+    "/api/tasks",
+    "/api/tasks/{task_id}/status",
+    "/api/tasks/{task_id}/assign",
+    "/api/tasks/{task_id}/comment",
+    "/api/tasks/{task_id}/update",
+    "/api/tasks/{task_id}/archive",
+    "/api/tasks/{task_id}/comment-edit",
+    "/api/tasks/{task_id}/comment-delete",
+    "/api/tasks/{task_id}/react",
+    "/api/tasks/{task_id}/unreact",
+    "/api/tasks/{task_id}/open-notes",
+    "/api/tasks/{task_id}/open-plans",
+    "/api/issues",
+    "/api/issues/{issue_id}/comment",
+    "/api/issues/{issue_id}/dismiss",
+    "/api/issues/{issue_id}/reopen",
+)
+
+_TASK_ACTION_ROUTE_TEMPLATES = frozenset(
+    template
+    for template in JSON_POST_ROUTE_TEMPLATES
+    if template.startswith("/api/tasks/{task_id}/")
+    and template
+    not in {
+        "/api/tasks/{task_id}/open-notes",
+        "/api/tasks/{task_id}/open-plans",
+    }
+)
+_TASK_OPEN_ROUTE_TEMPLATES = frozenset(
+    {"/api/tasks/{task_id}/open-notes", "/api/tasks/{task_id}/open-plans"}
+)
+
+
 @dataclass(frozen=True)
 class WriteRequest:
     """One dashboard POST as the operation it runs.
@@ -938,6 +976,29 @@ class WriteRequest:
 
 def _invalid(message: str) -> ApiError:
     return ApiError(400, "VALIDATION_ERROR", message)
+
+
+def match_json_post_route(path: str) -> str | None:
+    """Return the registered template matching *path*, or ``None``."""
+    path_parts = path.strip("/").split("/")
+    for template in JSON_POST_ROUTE_TEMPLATES:
+        template_parts = template.strip("/").split("/")
+        if len(path_parts) != len(template_parts):
+            continue
+        if all(
+            part == candidate
+            if not (part.startswith("{") and part.endswith("}"))
+            else bool(candidate)
+            for part, candidate in zip(template_parts, path_parts)
+        ):
+            return template
+    return None
+
+
+def validate_json_post_body(path: str, body: Any) -> None:
+    """Reject non-object JSON for registered routes before route-specific work."""
+    if match_json_post_route(path) is not None and not isinstance(body, dict):
+        raise _invalid("Request body must be a JSON object")
 
 
 def _snapshot(result: Any) -> tuple[int, Any]:
@@ -1053,16 +1114,13 @@ def translate_post(path: str, body: Any) -> WriteRequest:
     could never have sent (400); every rule about the change itself is the
     operation's, with the CLI's codes and messages (SPEC §10, G-6).
     """
-    if (
-        path == "/api/tasks"
-        or path == "/api/config/dashboard"
-        or path.startswith("/api/tasks/")
-        or path == "/api/issues"
-        or path.startswith("/api/issues/")
-    ):
-        if not isinstance(body, dict):
-            raise _invalid("Request body must be a JSON object")
-    if path == "/api/config/dashboard":
+    route = match_json_post_route(path)
+    if route is None:
+        if path.startswith(("/api/tasks/", "/api/issues/")):
+            raise ApiError(404, "NOT_FOUND", f"Not found: {path}")
+        raise ApiError(404, "NOT_FOUND", f"Unknown API endpoint: {path}")
+    validate_json_post_body(path, body)
+    if route == "/api/config/dashboard":
         settings = {k: v for k, v in body.items() if k != "actor"}
         return WriteRequest(
             "board.set_dashboard_config",
@@ -1070,7 +1128,7 @@ def translate_post(path: str, body: Any) -> WriteRequest:
             body.get("actor"),
             lambda result: (200, result.value),
         )
-    if path == "/api/tasks":
+    if route == "/api/tasks":
         title = body.get("title")
         if not title or not isinstance(title, str) or not title.strip():
             raise _invalid("Missing or empty 'title' field")
@@ -1087,14 +1145,19 @@ def translate_post(path: str, body: Any) -> WriteRequest:
         if tags:
             params["tag"] = tuple(tags)
         return WriteRequest("task.create", params, body.get("actor"), lambda r: (201, r.value))
-    if path.startswith("/api/tasks/"):
-        remainder = path[len("/api/tasks/") :]
-        if "/" in remainder:
-            task_id, sub = remainder.rsplit("/", 1)
-            _require_task_id(task_id)
-            return _task_write(task_id, sub, body)
-        raise ApiError(404, "NOT_FOUND", f"Not found: {path}")
-    if path == "/api/issues":
+    if route in _TASK_ACTION_ROUTE_TEMPLATES:
+        task_id, sub = path[len("/api/tasks/") :].rsplit("/", 1)
+        _require_task_id(task_id)
+        return _task_write(task_id, sub, body)
+    if route in _TASK_OPEN_ROUTE_TEMPLATES:
+        kind = "notes" if route.endswith("open-notes") else "plan"
+        raise ApiError(
+            400,
+            "LOCAL_ONLY",
+            f"This board lives on a server; write the {kind} with "
+            f"'lattice {kind} write <task> --file <path>'.",
+        )
+    if route == "/api/issues":
         title = body.get("title")
         if not isinstance(title, str) or not title.strip():
             raise _invalid("Missing or empty 'title' field")
@@ -1132,7 +1195,7 @@ def translate_post(path: str, body: Any) -> WriteRequest:
             return 201, _normalize_issue_detail(value)
 
         return WriteRequest("issue.file", params, body.get("actor"), render_issue)
-    if path.startswith("/api/issues/"):
+    if route.startswith("/api/issues/{issue_id}/"):
         remainder = path[len("/api/issues/") :]
         issue_id, separator, sub = remainder.partition("/")
         if not separator or sub not in ("comment", "dismiss", "reopen"):
