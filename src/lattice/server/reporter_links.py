@@ -214,6 +214,20 @@ def _forget_source_stages_under_admin_lock(root: Path, link_id: str, source_ref:
     return set(removed["hashes"]) - referenced_elsewhere
 
 
+def _other_source_stage_hashes_under_admin_lock(
+    root: Path, link_id: str, source_ref: str, submitted_hashes: set[str]
+) -> frozenset[str]:
+    """Find submitted hashes another live report for this link still needs."""
+    entries = _prune_stage_map(_read_stage_map(root))
+    return frozenset(
+        digest
+        for entry in entries.values()
+        if entry["link_id"] == link_id and entry["source_ref"] != source_ref
+        for digest in entry["hashes"]
+        if digest in submitted_hashes
+    )
+
+
 def _forget_link_stages_under_admin_lock(root: Path, link_id: str) -> None:
     original = _read_stage_map(root)
     entries = _prune_stage_map(original)
@@ -740,7 +754,10 @@ async def media_stage(request: Request, state: Any) -> Response:
     body = app_module._UploadBody(request, state.log, record["project"], token.id)
     entered = False
     try:
-        state.limits.enter(token.id)
+        try:
+            state.limits.enter(token.id)
+        except OpError as exc:
+            await refuse(exc, body)
         entered = True
         try:
             _take_link_operation(state, token)
@@ -770,7 +787,10 @@ async def media_stage(request: Request, state: Any) -> Response:
             filename = _safe_filename(request.query_params.get("filename", "attachment"))
             prepared = await app_module.in_worker(
                 lambda: prepare_media_file(
-                    filename, bytes(received), refuse_video_without_ffmpeg=True
+                    filename,
+                    bytes(received),
+                    refuse_video_without_ffmpeg=True,
+                    refuse_unstrippable_photos=True,
                 )
             )
 
@@ -972,9 +992,17 @@ async def submit(request: Request, state: Any) -> Response:
                     or live.id != token.id
                 ):
                     raise _LinkUnavailable
+                with admin.admin_lock(state.root):
+                    preserved_hashes = _other_source_stage_hashes_under_admin_lock(
+                        state.root,
+                        record["id"],
+                        form["source_ref"],
+                        _submitted_hashes(media),
+                    )
                 with project.locked():
-                    project.admit()
-                    outcome = project.run_write(write)
+                    with project.issue_media.preserve_staged_hashes(preserved_hashes):
+                        project.admit()
+                        outcome = project.run_write(write)
                 result_data = outcome.result_data
                 receipt = result_data.get("value") if isinstance(result_data, dict) else None
                 if isinstance(receipt, dict) and receipt.get("deduplicated") is False:

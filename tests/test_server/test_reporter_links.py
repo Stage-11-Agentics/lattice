@@ -17,12 +17,13 @@ from click.testing import CliRunner
 from lattice.cli.main import cli
 from lattice.core.errors import OpError
 from lattice.core.ids import generate_instance_id, generate_op_id
-from lattice.server import admin, control, reporter_links, tokens
+from lattice.ops.task_attach import encode_payload
+from lattice.server import admin, control, media_staging, reporter_links, tokens
 from lattice.server.issue_media import HostedIssueMedia
 from lattice.server.log import _scrub
 from lattice.server.testing import ServerHandle, running_server
 from lattice.storage.issues import read_issue_events, read_issue_snapshot
-from tests.issue_media_helpers import mp4, png
+from tests.issue_media_helpers import jpeg, mp4, png, webp
 from tests.test_server.conftest import NO_AUDIT
 
 PUBLIC_ORIGIN = "https://report.example.test"
@@ -78,6 +79,26 @@ def png_with_text_metadata() -> bytes:
         + struct.pack(">I", zlib.crc32(b"tEXt" + payload))
     )
     return raw[:33] + chunk + raw[33:]
+
+
+def webp_with_gps_exif() -> bytes:
+    raw = bytearray(webp())
+    # VP8X's EXIF-present flag; a minimal GPS IFD in little-endian TIFF.
+    raw[20] = 0x08
+    gps_offset = 26
+    exif = bytearray(b"Exif\x00\x00II*\x00" + struct.pack("<I", 8))
+    exif.extend(struct.pack("<H", 1))
+    exif.extend(struct.pack("<HHI4s", 0x8825, 4, 1, struct.pack("<I", gps_offset)))
+    exif.extend(b"\x00" * 4)
+    exif.extend(struct.pack("<H", 1))
+    exif.extend(struct.pack("<HHI4s", 1, 2, 2, b"N\x00\x00\x00"))
+    exif.extend(b"\x00" * 4)
+    chunk = b"EXIF" + struct.pack("<I", len(exif)) + exif
+    if len(exif) % 2:
+        chunk += b"\x00"
+    raw.extend(chunk)
+    struct.pack_into("<I", raw, 4, len(raw) - 8)
+    return bytes(raw)
 
 
 def test_cli_create_list_and_revoke_bind_exact_filing_contract(root: Path) -> None:
@@ -362,6 +383,35 @@ def test_public_route_uses_shared_preparation_and_token_owned_media(root: Path) 
         assert not stage_map["entries"]
 
 
+def test_reporter_refuses_webp_gps_metadata_before_staging(root: Path) -> None:
+    result = create_link(root)
+    record = result["link"]
+    secret = secret_from(result["url"])
+    raw = webp_with_gps_exif()
+    digest = hashlib.sha256(raw).hexdigest()
+    source_ref = generate_instance_id().removeprefix("inst_")
+    with running_server(root, config=NO_AUDIT) as server:
+        status, _, refusal = server.request(
+            "PUT",
+            f"/r/{secret}/media/{source_ref}/{digest}?filename=location.webp",
+            body=raw,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Origin": record["public_origin"],
+            },
+        )
+        assert status == 400
+        assert refusal["error"]["code"] == "PHOTO_METADATA_UNSTRIPPED"
+        assert (
+            refusal["error"]["message"]
+            == reporter_links.REPORTER_COPY["PHOTO_METADATA_UNSTRIPPED"]
+        )
+        project = server.project("alpha")
+        assert project.issue_media._read_stage_metadata(digest) is None
+    stage_map_path = root / reporter_links.STAGE_MAP_NAME
+    assert not stage_map_path.exists() or not json.loads(stage_map_path.read_text())["entries"]
+
+
 def test_reporter_video_refuses_when_shared_preparation_cannot_strip(
     root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -430,6 +480,124 @@ def test_terminal_failure_keeps_shared_hash_owned_by_sibling_source_ref(root: Pa
     entries = json.loads((root / reporter_links.STAGE_MAP_NAME).read_text())["entries"]
     assert set(entries) == {reporter_links._stage_map_key(record["id"], second_ref)}
     assert staged_owner(root, digest)["owners"] == [record["token_id"]]
+
+
+def test_successful_filing_preserves_shared_stage_until_sibling_source_ref_files(
+    root: Path,
+) -> None:
+    result = create_link(root)
+    record = result["link"]
+    secret = secret_from(result["url"])
+    raw = png()
+    digest = hashlib.sha256(raw).hexdigest()
+    refs = [generate_instance_id().removeprefix("inst_") for _ in range(2)]
+    with running_server(root, config=NO_AUDIT) as server:
+        staged_by_ref = {}
+        for source_ref in refs:
+            status, _, staged = server.request(
+                "PUT",
+                f"/r/{secret}/media/{source_ref}/{digest}?filename=shared.png",
+                body=raw,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "Origin": record["public_origin"],
+                },
+            )
+            assert status == 201, staged
+            staged_by_ref[source_ref] = staged["data"]
+
+        receipts = []
+        for source_ref in refs:
+            status, _, receipt = post_report(
+                server,
+                secret,
+                {
+                    "op_id": generate_op_id(),
+                    "source_ref": source_ref,
+                    "title": f"Report {source_ref}",
+                    "media": [staged_by_ref[source_ref]],
+                },
+                origin=record["public_origin"],
+            )
+            assert status == 200, receipt
+            assert receipt["source_ref"] == source_ref
+            receipts.append(receipt)
+            stage_map = json.loads((root / reporter_links.STAGE_MAP_NAME).read_text())
+            if source_ref == refs[0]:
+                assert set(stage_map["entries"]) == {
+                    reporter_links._stage_map_key(record["id"], refs[1])
+                }
+                assert server.project("alpha").issue_media._blob_path(digest).is_file()
+                assert staged_owner(root, digest)["owners"] == [record["token_id"]]
+            else:
+                assert stage_map["entries"] == {}
+                assert not server.project("alpha").issue_media._blob_path(digest).exists()
+        assert receipts[0]["id"] != receipts[1]["id"]
+
+
+def test_reporter_issue_quota_counts_video_frame_sidecars(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = create_link(root)
+    record = result["link"]
+    secret = secret_from(result["url"])
+    raw = mp4(b"raw upload")
+    clip = mp4(b"prepared original")
+    frame = jpeg()
+    issue_limit = len(clip) + len(frame) - 1
+    source_ref = generate_instance_id().removeprefix("inst_")
+    prepared_item = {
+        "payload": encode_payload("clip.mp4", clip),
+        "video": {"width": 8, "height": 8, "duration_ms": 1000},
+        "frames": [{"t_ms": 500, "payload": encode_payload("frame.jpg", frame)}],
+    }
+    monkeypatch.setattr(
+        media_staging,
+        "prepare_media_file",
+        lambda _filename, _content, **_kwargs: prepared_item,
+    )
+    config = {
+        **NO_AUDIT,
+        "limits": {"max_issue_media_issue_bytes": issue_limit},
+    }
+    with running_server(root, config=config) as server:
+        project = server.project("alpha")
+        sequence_before = project.journal.head_seq
+        digest = hashlib.sha256(raw).hexdigest()
+        status, _, staged = server.request(
+            "PUT",
+            f"/r/{secret}/media/{source_ref}/{digest}?filename=clip.mp4",
+            body=raw,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Origin": record["public_origin"],
+            },
+        )
+        assert status == 201, staged
+        stage_data = staged["data"]
+        stage_hashes = {
+            stage_data["payload"]["sha256"],
+            stage_data["frames"][0]["payload"]["sha256"],
+        }
+        status, _, refusal = post_report(
+            server,
+            secret,
+            {
+                "op_id": generate_op_id(),
+                "source_ref": source_ref,
+                "title": "Video with frame over the limit",
+                "media": [stage_data],
+            },
+            origin=record["public_origin"],
+        )
+        assert status == 413, refusal
+        assert refusal["error"]["code"] == "PAYLOAD_TOO_LARGE"
+        assert project.journal.head_seq == sequence_before
+        stage_map = json.loads((root / reporter_links.STAGE_MAP_NAME).read_text())
+        assert stage_map["entries"] == {}
+        assert all(
+            project.issue_media._read_stage_metadata(digest) is None for digest in stage_hashes
+        )
 
 
 def _request_headers_without_body(
@@ -591,6 +759,43 @@ def test_reporter_errors_are_static_copy_and_31st_op_is_friendly(root: Path) -> 
         assert status == 429
         assert body["error"]["code"] == "RATE_LIMITED"
         assert "Too many uploads or reports" in body["error"]["message"]
+
+
+def test_reporter_media_inflight_limit_uses_safe_copy(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = create_link(root)
+    record = result["link"]
+    secret = secret_from(result["url"])
+    source_ref = generate_instance_id().removeprefix("inst_")
+    raw = png()
+    digest = hashlib.sha256(raw).hexdigest()
+    with running_server(root, config=NO_AUDIT) as server:
+        token_id = record["token_id"]
+
+        def reject_inflight(token: str) -> None:
+            raise OpError(
+                "RATE_LIMITED",
+                f"token {token} already has 8 requests in flight (limit 8)",
+                {"retry_after": 1},
+            )
+
+        monkeypatch.setattr(server.state.limits, "enter", reject_inflight)
+        status, headers, refusal = server.request(
+            "PUT",
+            f"/r/{secret}/media/{source_ref}/{digest}?filename=photo.png",
+            body=raw,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Origin": record["public_origin"],
+            },
+        )
+        assert status == 429
+        assert headers.get("retry-after") == "1"
+        assert refusal["error"]["code"] == "RATE_LIMITED"
+        assert refusal["error"]["message"] == reporter_links.REPORTER_COPY["RATE_LIMITED"]
+        assert token_id not in refusal["error"]["message"]
+        assert "already has 8 requests" not in refusal["error"]["message"]
 
 
 def _stage_direct(media: HostedIssueMedia, token_id: str, data: bytes) -> str:

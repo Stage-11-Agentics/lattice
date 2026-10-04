@@ -15,6 +15,7 @@ import stat
 import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -445,6 +446,7 @@ class HostedIssueMedia:
         self.max_issue_bytes = max_issue_bytes
         self.max_project_bytes = max_project_bytes
         self.lock = threading.Lock()
+        self._stage_preservation = threading.local()
         self._inflight: set[str] = set()
         self._reserved: dict[str, int] = {}
         #: Re-uploads of an existing shared hash reserve quota for its new owner
@@ -547,6 +549,22 @@ class HostedIssueMedia:
 
     def _published_unique_bytes(self) -> int:
         return self.published_bytes
+
+    @contextmanager
+    def preserve_staged_hashes(self, hashes: set[str] | frozenset[str]) -> Iterator[None]:
+        """Keep selected stage blobs through a commit on this worker thread."""
+        previous = getattr(self._stage_preservation, "hashes", None)
+        current = frozenset(hashes)
+        if previous is not None:
+            current |= previous
+        self._stage_preservation.hashes = current
+        try:
+            yield
+        finally:
+            if previous is None:
+                del self._stage_preservation.hashes
+            else:
+                self._stage_preservation.hashes = previous
 
     def _staged_unique_bytes(self) -> int:
         sizes = dict(self._reserved)
@@ -1013,7 +1031,8 @@ class HostedIssueMedia:
             referenced.append(item)
         path.unlink(missing_ok=True)
         self._remove_unreferenced_stage(
-            {item.get("sha256") for item in manifest.get("objects", []) if isinstance(item, dict)}
+            {item.get("sha256") for item in manifest.get("objects", []) if isinstance(item, dict)},
+            keep=getattr(self._stage_preservation, "hashes", frozenset()),
         )
         self.published_bytes = self.scan_published()
         return True

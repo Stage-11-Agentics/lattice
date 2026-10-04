@@ -12,9 +12,18 @@ from lattice.ops.task_attach import decode_payload, encode_payload
 
 
 def prepare_media_file(
-    filename: str, content: bytes, *, refuse_video_without_ffmpeg: bool
+    filename: str,
+    content: bytes,
+    *,
+    refuse_video_without_ffmpeg: bool,
+    refuse_unstrippable_photos: bool = False,
 ) -> dict:
-    """Run shared photo/video privacy preparation and validate the result shape."""
+    """Run shared photo/video privacy preparation and validate the result shape.
+
+    Public reporter links can opt into refusing photo formats for which shared
+    preparation has no metadata-stripping result. Dashboard callers retain
+    their existing behavior.
+    """
     name = clean_original_name(filename) or "attachment"
     items = prepare_issue_media(
         [{"payload": encode_payload(name, content)}],
@@ -26,8 +35,19 @@ def prepare_media_file(
     check_media_items((item,))
     _name, prepared = decode_payload(item["payload"])
     content_type = sniff_media(prepared[:64])
-    if content_type is None or media_kind(content_type) not in {"photo", "video"}:
+    kind = media_kind(content_type) if content_type is not None else None
+    if content_type is None or kind not in {"photo", "video"}:
         raise OpError("VALIDATION_ERROR", "Choose a photo or video file.")
+    if (
+        refuse_unstrippable_photos
+        and kind == "photo"
+        and content_type not in {"image/jpeg", "image/png"}
+    ):
+        raise OpError(
+            "VALIDATION_ERROR",
+            "This photo format could not be made private.",
+            {"reason": "PHOTO_METADATA_UNSTRIPPED"},
+        )
     return item
 
 
