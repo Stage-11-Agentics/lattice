@@ -98,12 +98,16 @@ def test_assets_and_api_calls_use_the_base_path() -> None:
     )
     assert reads in html and writes in html
     upload = re.search(
-        r"var response = await fetch\(apiUrl\(BASE_PATH,\s*"
-        r'"issues/media/staging/" \+ sha256[\s\S]*?\n\s*\}\);',
+        r"async function uploadIssueMedia\(file\) \{\s*"
+        r"return IssueUpload\.uploadIssueMedia\(file,\s*\{[\s\S]*?"
+        r"url: function\(path\) \{ return apiUrl\(BASE_PATH, path\); \}\s*\}\);",
         html,
     )
-    assert upload is not None, (
-        "the raw issue-media upload must resolve against the dashboard base path"
+    assert upload is not None, "the issue-media upload must pass a base-path-aware URL resolver"
+    upload_module = (STATIC / "issue-upload.js").read_text()
+    assert '<script src="static/issue-upload.js"></script>' in html
+    assert "options.fetch(options.url(" in upload_module, (
+        "the upload module must use the injected base-path-aware URL resolver"
     )
     remaining = html.replace(reads, "").replace(writes, "").replace(upload.group(0), "")
     assert re.search(r"fetch\(", remaining) is None, (

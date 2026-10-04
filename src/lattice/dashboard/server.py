@@ -48,6 +48,13 @@ __all__ = ["MAX_REQUEST_BODY_BYTES", "STATIC_DIR", "create_server", "origin_allo
 # hard-bound it even when the board owner raises the media settings.
 MAX_ISSUE_FILE_BODY_BYTES = 2 * 1024 * 1024 * 1024
 
+# A bound checkout exposes issue metadata, but the cached board is read-only.
+_BOUND_CHECKOUT_ISSUES_READ_ONLY = (
+    400,
+    "LOCAL_ONLY",
+    "This bound checkout is read-only. File and comment on the hosted dashboard or with 'lattice issue'.",
+)
+
 
 def issue_file_body_limit(lattice_dir: Path) -> int:
     """Bound quick-file JSON from configured media limits and frame overhead."""
@@ -298,7 +305,7 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
 
             if _is_issue_api_path(path):
                 if self._target.hosted:
-                    self._send_error(*api.ISSUES_UNAVAILABLE)
+                    self._send_error(*_BOUND_CHECKOUT_ISSUES_READ_ONLY)
                     return None
                 try:
                     with self._target.read() as ld:

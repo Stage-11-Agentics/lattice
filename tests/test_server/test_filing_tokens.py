@@ -575,6 +575,7 @@ def test_filing_routes_fail_closed_for_every_registered_non_filing_method(
         "/p/{slug}",
         "/p/{slug}/",
         "/p/{slug}/favicon.ico",
+        "/p/{slug}/issues/media/staging/{sha256}",
         "/p/{slug}/issues/media/{issue_id}/{media_id}/frames/{frame}",
         "/p/{slug}/issues/media/{issue_id}/{media_id}",
         "/p/{slug}/static/{path:path}",

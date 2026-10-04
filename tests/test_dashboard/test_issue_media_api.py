@@ -432,7 +432,9 @@ def test_bound_checkout_reads_issues_without_media_or_writes(served) -> None:  #
             )
             response = conn.getresponse()
             assert response.status == 400, path
-            assert json.loads(response.read())["error"]["code"] == "LOCAL_ONLY", path
+            error = json.loads(response.read())["error"]
+            assert error["code"] == "LOCAL_ONLY", path
+            assert "bound checkout is read-only" in error["message"], path
             conn.close()
     finally:
         server.shutdown()
