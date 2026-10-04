@@ -119,6 +119,10 @@ Lattice is **v2.0.0. actively developed.** v2 adds [Lattice Hosted](#lattice-hos
 
 ### upgrading to v2
 
+- **issue photo privacy.** Newly filed JPEG and PNG photos have identifying metadata removed before their stored hash is calculated; JPEG orientation is preserved. HEIC is converted before filing when a caller has sips or ffmpeg. If conversion or parsing cannot run, the file is refused unless `--keep-photo-metadata` explicitly permits the original. That flag does not skip stripping on valid JPEG or PNG files. The rule covers local CLI, dashboard, hosted uploads, and imported boards. Import changes are appended to issue history in the destination copy. Import reports `media_count` for originals and `media_object_count` for originals plus frame sidecars, with separate `photos_sanitized`, `frames_sanitized`, and `photos_unchecked` counts. Existing media and old git history are not rewritten, and a pre-upgrade raw-hash attachment may not deduplicate against a later sanitized re-attachment. GIF and WebP metadata is still retained.
+
+For a hosted upgrade, update clients before the server. A pre-LAT-383 client filing a metadata-bearing photo against a new server can get a hash mismatch because the server stages the stripped bytes.
+
 local boards keep their layout and need no migration. what a local user sees change:
 
 - **origin on every event.** each new event records where it came from: host, OS user, worktree, branch, Lattice version. `lattice show` prints it per event as `actor · user@machine · worktree (branch)`, and `--json` includes it. `lattice list --machine/--user/--worktree` filter by it.

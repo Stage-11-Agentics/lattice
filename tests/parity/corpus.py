@@ -956,7 +956,7 @@ TOMBSTONES = Scenario(
 
 ISSUES = Scenario(
     name="issues",
-    description="hosted and local issue filing, editing, closing, linking and promotion",
+    description="hosted and local issue filing, editing, closing, linking and fallback help",
     config={"issues": {"enabled": True}},
     steps=(
         c("create", "Issue-linked task", *H),
@@ -974,6 +974,9 @@ ISSUES = Scenario(
         c("issue", "promote", "PAR-I2", "--title", "Fix the observation", *H),
         c("issue", "show", "PAR-I2"),
         c("issue", "list", "--all"),
+        c("issue", "file", "--help", plain_only=True),
+        c("issue", "attach", "--help", plain_only=True),
+        c("server", "project", "import", "--help", plain_only=True),
     ),
 )
 

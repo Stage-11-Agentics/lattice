@@ -28,7 +28,7 @@ import pytest
 from lattice.core.errors import OpError
 from lattice.remote import client, http, session
 from lattice.server import admin
-from tests.issue_media_helpers import fake_sips, heic, png
+from tests.issue_media_helpers import fake_sips, heic, png, png_with_large_idat
 from tests.test_remote import hosted as _hosted
 from tests.test_remote.hosted import HostedEnv, make_repo, run_cli
 
@@ -352,7 +352,7 @@ def test_a_media_quota_refusal_keeps_its_limit_and_used_bytes_in_json(
     hosted_env.stop()
     hosted_env.start()
     photo = tmp_path / "big.png"
-    photo.write_bytes(png() + b"\x00" * 4000)
+    photo.write_bytes(png_with_large_idat(4000))
     result = run_cli(repo, "issue", "file", "too big", "--evidence", str(photo), *ACTOR, "--json")
     assert result.exit_code == 1, result.output
     error = json.loads(result.stdout)["error"]

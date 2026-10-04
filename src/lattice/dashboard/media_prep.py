@@ -18,12 +18,14 @@ from pathlib import Path
 
 from lattice.core.errors import OpError
 from lattice.core.issue_media import (
+    PhotoMetadataError,
     SNIFF_BYTES,
     clean_original_name,
     frame_name,
     media_kind,
     sniff_heic,
     sniff_media,
+    strip_photo_metadata,
 )
 from lattice.ops.task_attach import decode_payload, encode_payload
 
@@ -60,8 +62,15 @@ def _prepare_item(item: dict, *, refuse_video_without_ffmpeg: bool = False) -> d
             payload["sha256"].lower(),
             refuse_video_without_ffmpeg=refuse_video_without_ffmpeg,
         )
-    if content_type is None and sniff_heic(head):
+    if content_type == "image/heic" or (content_type is None and sniff_heic(head)):
         return _convert_heic(item, name, content, payload["sha256"].lower())
+    if content_type in {"image/jpeg", "image/png"}:
+        try:
+            clean = strip_photo_metadata(content, content_type)
+        except PhotoMetadataError:
+            return item
+        if clean != content:
+            return {**_unknown_keys(item), "payload": encode_payload(name, clean)}
     return item
 
 
@@ -124,6 +133,10 @@ def _convert_heic(item: dict, name: str, content: bytes, sha256: str) -> dict:
         src.write_bytes(content)
         converted = convert_heic(src)
     if converted is None:
+        return item
+    try:
+        converted = strip_photo_metadata(converted, "image/jpeg")
+    except PhotoMetadataError:
         return item
     return {
         **_unknown_keys(item),

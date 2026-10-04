@@ -29,7 +29,7 @@ from lattice.server.filing_guard import filing_route_allowed, require_filing_rou
 from lattice.server.sessions import COOKIE_NAME, hash_secret
 from lattice.server.testing import ServerHandle, running_server
 from lattice.server.transactions import IndexEntry
-from tests.issue_media_helpers import jpeg, png
+from tests.issue_media_helpers import jpeg, png, png_with_large_idat
 from tests.test_server.conftest import mint
 from tests.test_server.web_client import WebClient
 
@@ -833,10 +833,38 @@ def test_staging_body_above_token_capacity_is_token_scoped_413(root: Path) -> No
 
 def test_default_filing_token_can_stage_a_70_mib_file(server: ServerHandle, root: Path) -> None:
     filing = filing_token(root)
-    media = png() + bytes(70 * 1024 * 1024 - len(png()))
+    media = png_with_large_idat(70 * 1024 * 1024)
     status, _, body = stage(server, filing, media)
     assert status == 201, body
-    assert body["data"]["size_bytes"] == 70 * 1024 * 1024
+    assert body["data"]["upload_sha256"] == hashlib.sha256(media).hexdigest()
+    assert body["data"]["sha256"] == hashlib.sha256(media).hexdigest()
+    assert body["data"]["size_bytes"] == len(media)
+
+
+def test_filing_only_tokens_cannot_keep_photo_metadata(server: ServerHandle, root: Path) -> None:
+    filing = filing_token(root)
+    photo = png()
+    digest = hashlib.sha256(photo).hexdigest()
+    status, _, staged = server.request(
+        "PUT",
+        f"/v1/projects/{SLUG}/issues/media/staging/{digest}",
+        token=filing,
+        body=photo,
+        headers={
+            "Content-Type": "application/octet-stream",
+            "X-Lattice-Keep-Photo-Metadata": "true",
+        },
+    )
+    assert status == 403 and staged["error"]["code"] == "TOKEN_RESTRICTED"
+
+    status, _, refused = file_issue(
+        server,
+        filing,
+        source_ref="metadata-override",
+        media=[staged_item(photo)],
+        keep_photo_metadata=True,
+    )
+    assert status == 403 and refused["error"]["code"] == "TOKEN_RESTRICTED"
 
 
 def test_filing_token_reuses_cached_auth_record_and_rejects_session_selection(

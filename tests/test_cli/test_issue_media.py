@@ -26,6 +26,11 @@ from tests.issue_media_helpers import (
     use_fake_ffmpeg,
     webm,
 )
+from tests.photo_metadata_helpers import (
+    assert_no_identifying_metadata,
+    jpeg_with_gps,
+    png_with_gps,
+)
 from tests.test_cli.test_issue_cmds import A, _set_config, _tree
 
 
@@ -46,6 +51,8 @@ def files(tmp_path: Path) -> Path:
         "logo.svg": SVG,
         "IMG_1.HEIC": heic(),
         "after.jpg": jpeg(),
+        "geo.jpg": jpeg_with_gps(),
+        "geo.png": png_with_gps(),
         "repro.mov": mov(b"repro"),
         "run.webm": webm(b"run"),
         "build.log": b"ok\n",
@@ -144,7 +151,7 @@ def test_a_screenshot_is_copied_into_the_issue(root: Path, invoke, files: Path) 
 
 
 def test_type_comes_from_content_and_the_rest_stays_text(root: Path, invoke, files: Path) -> None:
-    kept = ["fake.png", "logo.svg", "IMG_1.HEIC", "adir", "missing.png", "build.log"]
+    kept = ["fake.png", "logo.svg", "adir", "missing.png", "build.log"]
     argv = ["--evidence", str(files / "shot.txt")]
     for name in kept:
         argv += ["--evidence", str(files / name)]
@@ -156,9 +163,6 @@ def test_type_comes_from_content_and_the_rest_stays_text(root: Path, invoke, fil
     assert f"  kept as text: {files / 'fake.png'} (not a photo or video by its content)" in lines
     assert f"  kept as text: {files / 'adir'} (a directory)" in lines
     assert f"  kept as text: {files / 'missing.png'} (no such file)" in lines
-    assert any(
-        "IMG_1.HEIC (a HEIC photo" in line and "sips -s format jpeg" in line for line in lines
-    )
     view = ok(invoke, "issue", "show", "LAT-I1")
     assert view["media"][0]["content_type"] == "image/png"
     assert view["evidence"] == [str(files / n) for n in kept] + ["https://ci.example/run/1"]
@@ -167,6 +171,87 @@ def test_type_comes_from_content_and_the_rest_stays_text(root: Path, invoke, fil
     assert data["notes"] == [
         {"evidence": str(files / "fake.png"), "kept_as": "text", "reason": "not_media"}
     ]
+
+
+def test_heic_without_a_converter_refuses_unless_photo_metadata_is_explicitly_kept(
+    root: Path, invoke, files: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LATTICE_SIPS", "off")
+    monkeypatch.setenv("LATTICE_FFMPEG", "off")
+    failed = err(invoke, "issue", "file", "t", "--evidence", str(files / "IMG_1.HEIC"))
+    assert "--keep-photo-metadata" in failed["message"]
+    assert not (root / ".lattice" / "issues").exists()
+
+    data = ok(
+        invoke,
+        "issue",
+        "file",
+        "t",
+        "--evidence",
+        str(files / "IMG_1.HEIC"),
+        "--keep-photo-metadata",
+        *A,
+    )
+    assert data["media"][0]["content_type"] == "image/heic"
+    assert data["notes"][0]["reason"] == "photo_metadata_kept"
+
+
+def test_malformed_photo_refuses_or_is_reported_as_explicitly_kept(
+    root: Path, invoke, files: Path
+) -> None:
+    malformed = files / "malformed.jpg"
+    malformed.write_bytes(b"\xff\xd8\xff\xe1\x00\x20Exif")
+    failed = err(invoke, "issue", "file", "bad", "--evidence", str(malformed))
+    assert "--keep-photo-metadata" in failed["message"]
+    assert not (root / ".lattice" / "issues").exists()
+
+    kept = ok(
+        invoke,
+        "issue",
+        "file",
+        "kept",
+        "--evidence",
+        str(malformed),
+        "--keep-photo-metadata",
+        *A,
+    )
+    entry = kept["media"][0]
+    assert Path(entry["path"]).read_bytes() == malformed.read_bytes()
+    assert kept["notes"][0]["reason"] == "photo_metadata_kept"
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type", "fixture"),
+    [("geo.jpg", "image/jpeg", jpeg_with_gps), ("geo.png", "image/png", png_with_gps)],
+)
+def test_cli_file_and_attach_store_clean_bytes_and_hashes(
+    root: Path,
+    invoke,
+    files: Path,
+    filename: str,
+    content_type: str,
+    fixture,
+) -> None:
+    raw = fixture()
+    filed = ok(invoke, "issue", "file", "t", "--evidence", str(files / filename), *A)
+    entry = filed["media"][0]
+    stored = Path(entry["path"]).read_bytes()
+    assert_no_identifying_metadata(stored, content_type)
+    assert entry["sha256"] == hashlib.sha256(stored).hexdigest()
+    assert entry["size_bytes"] == len(stored)
+    assert any(note["reason"] == "photo_metadata_removed" for note in filed["notes"])
+
+    duplicate = ok(invoke, "issue", "attach", "LAT-I1", str(files / filename), *A)
+    assert duplicate["notes"][0]["reason"] == "duplicate"
+    ok(invoke, "issue", "file", "plain issue", *A)
+    attached = ok(invoke, "issue", "attach", "LAT-I2", str(files / filename), *A)
+    attached_entry = next(m for m in attached["media"] if m.get("n") == 1)
+    assert_no_identifying_metadata(Path(attached_entry["path"]).read_bytes(), content_type)
+    assert (
+        attached_entry["sha256"]
+        == hashlib.sha256(Path(attached_entry["path"]).read_bytes()).hexdigest()
+    )
+    assert raw != stored
 
 
 def test_heic_is_converted_to_jpeg(
@@ -179,6 +264,29 @@ def test_heic_is_converted_to_jpeg(
     assert entry["converted_from"]["content_type"] == "image/heic"
     assert data["notes"][0]["reason"] == "converted"
     assert data["evidence"] == []
+
+
+def test_cli_sanitizes_geo_tagged_jpeg_returned_by_heic_conversion(
+    root: Path, invoke, files: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lattice.integrations import ffmpeg
+
+    converted = jpeg_with_gps()
+    monkeypatch.setattr(ffmpeg, "convert_heic", lambda _path: converted)
+
+    data = ok(
+        invoke, "issue", "file", "converted HEIC", "--evidence", str(files / "IMG_1.HEIC"), *A
+    )
+
+    (entry,) = data["media"]
+    stored = Path(entry["path"]).read_bytes()
+    assert entry["content_type"] == "image/jpeg"
+    assert entry["converted_from"]["content_type"] == "image/heic"
+    assert_no_identifying_metadata(stored, "image/jpeg")
+    assert entry["sha256"] == hashlib.sha256(stored).hexdigest()
+    assert entry["size_bytes"] == len(stored)
+    reasons = {note["reason"] for note in data["notes"]}
+    assert {"converted", "photo_metadata_removed"} <= reasons
 
 
 # ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import random
 import struct
 import sys
 import zlib
@@ -30,6 +31,46 @@ def png(width: int = 3, height: int = 2) -> bytes:
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     raw = b"".join(b"\x00" + b"\x00\x00\x00" * width for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+def png_with_large_icc(size: int, seed: int = 0) -> bytes:
+    """A valid, synthetic PNG with a large color profile for quota tests."""
+    import random
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    ihdr = struct.pack(">IIBBBBB", 3, 2, 8, 2, 0, 0, 0)
+    raw = b"".join(b"\x00" + b"\x00\x00\x00" * 3 for _ in range(2))
+    profile = b"test profile\0\0" + zlib.compress(random.Random(seed).randbytes(size))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"iCCP", profile)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+def png_with_large_idat(size: int, seed: int = 0) -> bytes:
+    """A valid PNG whose retained image data exceeds *size* bytes."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    width = max(1, (size + 2) // 3)
+    raw = b"\x00" + random.Random(seed).randbytes(width * 3)
+    ihdr = struct.pack(">IIBBBBB", width, 1, 8, 2, 0, 0, 0)
     return (
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", ihdr)

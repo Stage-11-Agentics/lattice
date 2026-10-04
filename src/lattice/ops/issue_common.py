@@ -25,6 +25,7 @@ from lattice.core.issue_media import (
     MAX_FRAME_BYTES,
     MAX_FRAMES,
     MEDIA_FILE_TOO_LARGE,
+    PhotoMetadataError,
     SNIFF_BYTES,
     clean_original_name,
     file_too_large_message,
@@ -34,6 +35,7 @@ from lattice.core.issue_media import (
     media_kind,
     media_limits,
     sniff_media,
+    strip_photo_metadata,
 )
 from lattice.core.issues import (
     apply_issue_event,
@@ -300,13 +302,26 @@ def check_media_items(items: tuple[dict, ...]) -> None:
                 raise _invalid(f"media item {i}: two frames have the same t_ms.")
 
 
+def _photo_metadata_refusal(name: str) -> OpError:
+    return OpError(
+        "VALIDATION_ERROR",
+        f"{name} could not be converted to a metadata-free photo. Convert HEIC to JPEG, "
+        "repair malformed JPEG/PNG, or use the CLI fallback "
+        "`lattice issue file --evidence <photo> --keep-photo-metadata` (or "
+        "`lattice issue attach <issue> <photo> --keep-photo-metadata`) to store the original.",
+        {"reason": "PHOTO_METADATA_UNSTRIPPED", "param": "media"},
+    )
+
+
 def _decode_one(
     item: dict,
     per_file: int,
     nothing: str,
+    *,
     stage_manager=None,
     token_id: str | None = None,
     require_stage_owner: bool = False,
+    keep_photo_metadata: bool = False,
 ) -> DecodedMedia:
     filename = item["payload"].get("filename")
     name = clean_original_name(filename) if isinstance(filename, str) else "?"
@@ -362,6 +377,31 @@ def _decode_one(
             {"reason": "NOT_MEDIA", "param": "media"},
         )
     kind = media_kind(content_type) or ""
+    if kind == "photo":
+        if staged:
+            metadata_status = metadata.get("photo_metadata_status")
+            allowed_statuses = {"stripped"}
+            if keep_photo_metadata:
+                allowed_statuses.add("kept")
+            if content_type == "image/heic":
+                if not keep_photo_metadata or metadata_status != "kept":
+                    raise _photo_metadata_refusal(name)
+            elif (
+                content_type in {"image/jpeg", "image/png"}
+                and metadata_status not in allowed_statuses
+            ):
+                raise _photo_metadata_refusal(name)
+        elif content_type == "image/heic":
+            if not keep_photo_metadata:
+                raise _photo_metadata_refusal(name)
+        elif content_type in {"image/jpeg", "image/png"}:
+            try:
+                assert content is not None
+                content = strip_photo_metadata(content, content_type)
+                sha256 = hashlib.sha256(content).hexdigest()
+            except PhotoMetadataError as exc:
+                if not keep_photo_metadata:
+                    raise _photo_metadata_refusal(name) from exc
     video = item.get("video") or {}
     frames: list[tuple[int, bytes]] = []
     staged_frames: list[tuple[int, str, int]] = []
@@ -393,6 +433,11 @@ def _decode_one(
             )
             if frame_meta["content_type"] != "image/jpeg":
                 raise _invalid(f"{name}: every frame must be a JPEG of at most 2 MB.")
+            allowed_statuses = {"stripped"}
+            if keep_photo_metadata:
+                allowed_statuses.add("kept")
+            if frame_meta.get("photo_metadata_status") not in allowed_statuses:
+                raise _photo_metadata_refusal(_frame_name)
             staged_frames.append((frame["t_ms"], frame_hash, frame_size))
         else:
             if stage_manager is not None:
@@ -414,6 +459,11 @@ def _decode_one(
             _frame_name, data = decode_payload(frame_payload)
             if sniff_media(data[:SNIFF_BYTES]) != "image/jpeg" or len(data) > MAX_FRAME_BYTES:
                 raise _invalid(f"{name}: every frame must be a JPEG of at most 2 MB.")
+            try:
+                data = strip_photo_metadata(data, "image/jpeg")
+            except PhotoMetadataError as exc:
+                if not keep_photo_metadata:
+                    raise _photo_metadata_refusal(_frame_name) from exc
             frames.append((frame["t_ms"], data))
     if kind == "photo":
         dims = image_dimensions(content_type, content) if content is not None else (None, None)
@@ -476,9 +526,12 @@ def decode_media(
     stage_manager=None,
     token_id: str | None = None,
     require_stage_owner: bool = False,
+    keep_photo_metadata: bool = False,
 ) -> list[DecodedMedia]:
     """Decode and check every item, each within ``issues.max_media_mb``; the same
     content twice is kept once. *nothing*: the refusal's last sentence."""
+    if require_stage_owner and keep_photo_metadata:
+        raise OpError("TOKEN_RESTRICTED", "filing-only tokens cannot keep photo metadata.")
     per_file, _per_issue = media_limits(config)
     decoded: list[DecodedMedia] = []
     seen: set[str] = set()
@@ -487,9 +540,10 @@ def decode_media(
             item,
             per_file,
             nothing,
-            stage_manager,
+            stage_manager=stage_manager,
             token_id=token_id,
             require_stage_owner=require_stage_owner,
+            keep_photo_metadata=keep_photo_metadata,
         )
         if not seen & one.hashes:
             seen |= one.hashes

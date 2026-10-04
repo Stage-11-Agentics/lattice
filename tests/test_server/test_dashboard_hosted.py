@@ -259,9 +259,16 @@ class TestPage:
     def test_video_staging_runs_shared_prep_and_stages_metadata_free_frames(
         self, server: ServerHandle, root: Path, tmp_path: Path, monkeypatch
     ) -> None:  # noqa: ANN001
+        from lattice.storage.issue_media import list_frames, media_path
+        from tests.photo_metadata_helpers import (
+            assert_no_identifying_metadata,
+            jpeg_with_gps,
+            png_with_gps,
+        )
+
         admin.set_project_config(root, "alpha", {"issues.enabled": True})
         web = _logged_in(server, mint(root, projects=["alpha"]))
-        source, frame = mp4(), jpeg()
+        source, frame = mp4(), jpeg_with_gps()
         calls = use_stdlib_fake_ffmpeg(
             monkeypatch, tmp_path / "fake-ffmpeg", source=source, frame=frame
         )
@@ -278,6 +285,37 @@ class TestPage:
         assert staged["payload"]["staged"] is True
         assert staged["frames"]
         assert all(item["payload"]["staged"] is True for item in staged["frames"])
+
+        photo_stages = []
+        for filename, photo in (("geo.jpg", jpeg_with_gps()), ("geo.png", png_with_gps())):
+            photo_hash = hashlib.sha256(photo).hexdigest()
+            photo_response = web.request(
+                "PUT",
+                f"/p/alpha/issues/media/staging/{photo_hash}?filename={filename}",
+                body=photo,
+                headers={"Content-Type": "application/octet-stream", "Origin": web.origin},
+            )
+            assert photo_response.status == 201, photo_response.text
+            photo_stages.append(photo_response.json["data"])
+
+        filed = web.post_json(
+            "/p/alpha/api/issues",
+            {"title": "Video and geo photos", "media": [staged, *photo_stages]},
+        )
+        assert filed.status == 201, filed.text
+        issue = filed.json["data"]
+        board = root / "projects" / "alpha" / ".lattice"
+        video_entry, jpeg_entry, png_entry = issue["media"]
+        stored_jpeg = media_path(board, issue["id"], jpeg_entry)
+        stored_png = media_path(board, issue["id"], png_entry)
+        assert stored_jpeg is not None and stored_png is not None
+        assert_no_identifying_metadata(stored_jpeg.read_bytes(), "image/jpeg")
+        assert_no_identifying_metadata(stored_png.read_bytes(), "image/png")
+        video_frames = list_frames(board, issue["id"], video_entry)
+        assert video_frames
+        for _t_ms, path in video_frames:
+            assert_no_identifying_metadata(path.read_bytes(), "image/jpeg")
+
         commands = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
         assert any(
             any(
@@ -286,6 +324,26 @@ class TestPage:
             )
             for argv in commands
         )
+
+    def test_hosted_photo_staging_refusal_names_cli_escape(
+        self, server: ServerHandle, root: Path
+    ) -> None:
+        admin.set_project_config(root, "alpha", {"issues.enabled": True})
+        web = _logged_in(server, mint(root, projects=["alpha"]))
+        malformed = b"\xff\xd8\xff\xe1\x00\x20Exif"
+        digest = hashlib.sha256(malformed).hexdigest()
+
+        response = web.request(
+            "PUT",
+            f"/p/alpha/issues/media/staging/{digest}?filename=broken.jpg",
+            body=malformed,
+            headers={"Content-Type": "application/octet-stream", "Origin": web.origin},
+        )
+
+        assert response.status == 400
+        message = response.json["error"]["message"]
+        assert "lattice issue file --evidence <path> --keep-photo-metadata" in message
+        assert "X-Lattice-Keep-Photo-Metadata" not in message
 
     def test_hosted_video_refuses_without_ffmpeg_while_photos_still_stage(
         self, server: ServerHandle, root: Path, monkeypatch

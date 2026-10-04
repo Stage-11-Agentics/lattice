@@ -1833,6 +1833,108 @@ class TestIssueWritesOverHttp:
         finally:
             self._stop(server, worker)
 
+    def test_geo_tagged_photos_filed_over_http_are_stored_without_location_metadata(
+        self, tmp_path
+    ):
+        import hashlib
+
+        from tests.photo_metadata_helpers import (
+            assert_no_identifying_metadata,
+            jpeg_with_gps,
+            png_with_gps,
+        )
+        from lattice.ops.task_attach import encode_payload
+
+        server, worker, lattice_dir = self._board(tmp_path / "board")
+        try:
+            for name, content, content_type, suffix in (
+                ("gps.jpg", jpeg_with_gps(), "image/jpeg", ".jpg"),
+                ("gps.png", png_with_gps(), "image/png", ".png"),
+            ):
+                status, envelope = self._post(
+                    server,
+                    "/api/issues",
+                    {
+                        "title": name,
+                        "media": [{"payload": encode_payload(name, content)}],
+                    },
+                )
+                assert status == 201, envelope
+                issue = envelope["data"]
+                entry = issue["media"][0]
+                stored = lattice_dir / "issues" / "media" / issue["id"] / f"{entry['id']}{suffix}"
+                clean = stored.read_bytes()
+                assert_no_identifying_metadata(clean, content_type)
+                assert entry["sha256"] == hashlib.sha256(clean).hexdigest()
+                assert entry["size_bytes"] == len(clean)
+        finally:
+            self._stop(server, worker)
+
+    def test_heic_conversion_output_is_sanitized_before_dashboard_filing(
+        self, tmp_path, monkeypatch
+    ):
+        import hashlib
+
+        from lattice.integrations import ffmpeg
+        from lattice.ops.task_attach import decode_payload, encode_payload
+        from lattice.dashboard import media_prep
+        from tests.issue_media_helpers import heic
+        from tests.photo_metadata_helpers import assert_no_identifying_metadata, jpeg_with_gps
+
+        converted = jpeg_with_gps()
+        monkeypatch.setattr(ffmpeg, "convert_heic", lambda _path: converted)
+        original_payload = encode_payload("IMG_1.HEIC", heic())
+        prepared = media_prep.prepare_issue_media([{"payload": original_payload}])[0]
+        _prepared_name, prepared_bytes = decode_payload(prepared["payload"])
+        assert_no_identifying_metadata(prepared_bytes, "image/jpeg")
+        assert prepared["payload"]["sha256"] == hashlib.sha256(prepared_bytes).hexdigest()
+        server, worker, lattice_dir = self._board(tmp_path / "board")
+        try:
+            status, envelope = self._post(
+                server,
+                "/api/issues",
+                {
+                    "title": "converted HEIC",
+                    "media": [{"payload": original_payload}],
+                },
+            )
+            assert status == 201, envelope
+            issue = envelope["data"]
+            entry = issue["media"][0]
+            assert entry["content_type"] == "image/jpeg"
+            assert entry["converted_from"]["content_type"] == "image/heic"
+            stored_path = next(
+                (lattice_dir / "issues" / "media" / issue["id"]).glob(f"{entry['id']}.*")
+            )
+            clean = stored_path.read_bytes()
+            assert_no_identifying_metadata(clean, "image/jpeg")
+            assert entry["sha256"] == hashlib.sha256(clean).hexdigest()
+            assert entry["size_bytes"] == len(clean)
+        finally:
+            self._stop(server, worker)
+
+    def test_dashboard_refusal_names_the_full_cli_photo_metadata_escape(self, tmp_path):
+        from lattice.ops.task_attach import encode_payload
+
+        malformed = b"\xff\xd8\xff\xe1\x00\x20Exif"
+        server, worker, _lattice_dir = self._board(tmp_path / "board")
+        try:
+            status, envelope = self._post(
+                server,
+                "/api/issues",
+                {
+                    "title": "malformed photo",
+                    "media": [{"payload": encode_payload("bad.jpg", malformed)}],
+                },
+            )
+            assert status == 400
+            assert envelope["error"]["code"] == "VALIDATION_ERROR"
+            message = envelope["error"]["message"]
+            assert "lattice issue file --evidence <photo> --keep-photo-metadata" in message
+            assert "lattice issue attach <issue> <photo> --keep-photo-metadata" in message
+        finally:
+            self._stop(server, worker)
+
     def test_a_failing_media_step_answers_an_envelope_not_a_reset(self, tmp_path, monkeypatch):
         from lattice.dashboard import media_prep
         from lattice.ops.task_attach import encode_payload

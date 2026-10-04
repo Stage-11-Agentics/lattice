@@ -554,7 +554,7 @@
       }
     }
   },
-  "description": "hosted and local issue filing, editing, closing, linking and promotion",
+  "description": "hosted and local issue filing, editing, closing, linking and fallback help",
   "mode": "plain",
   "scenario": "issues",
   "steps": [
@@ -891,6 +891,156 @@
           "PAR-I2  linked     -         A corrected observation -> PAR-2 (backlog)",
           "PAR-I3  duplicate  -         A repeat of the first",
           "3 issues (1 open, 1 linked, 0 resolved, 0 dismissed, 1 duplicate)"
+        ]
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "file",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Usage: cli issue file [OPTIONS] TITLE",
+          "",
+          "  File an issue with a short title and optional description.",
+          "",
+          "  TITLE '-' reads stdin. A long or multi-line title is split into a title and",
+          "  description; an explicit description is appended after the overflow.",
+          "",
+          "  A photo or video passed as --evidence (decided by its content: PNG, JPEG,",
+          "  HEIC, GIF, WebP; MP4, MOV, WebM; HEIC is converted to JPEG when possible) is",
+          "  copied into the issue. With ffmpeg, a video is re-encoded to H.264 and gets",
+          "  still frames an agent can read ('lattice issue media <issue> --paths'). ffmpeg",
+          "  also removes a video's metadata, which can include where it was recorded; when",
+          "  it cannot, the video is refused unless you pass --keep-video-metadata. JPEG",
+          "  and PNG location and identifying metadata are removed before filing. HEIC is",
+          "  converted to JPEG; when conversion or stripping fails, the photo is refused",
+          "  unless you pass --keep-photo-metadata. That option never disables stripping",
+          "  from a valid JPEG or PNG.",
+          "",
+          "Options:",
+          "  --description TEXT              A longer explanation of the issue.",
+          "  --description-file FILE         Read the description from a file.",
+          "  --confidence [possible|definite]",
+          "                                  How sure the filer is.",
+          "  --evidence TEXT                 A path or URL backing it up (repeatable).",
+          "                                  Photos and videos are copied in.",
+          "  --source TEXT                   Where it came from (e.g., tester-round-8).",
+          "  --source-ref TEXT               A stable reference within --source; repeats",
+          "                                  return the existing issue.",
+          "  --keep-video-metadata           File a video as it is, with its metadata",
+          "                                  (which can include where it was recorded),",
+          "                                  when ffmpeg cannot strip it. Without this,",
+          "                                  such a video is refused.",
+          "  --keep-photo-metadata           File a photo as it is when metadata stripping",
+          "                                  fails, including HEIC when no converter is",
+          "                                  available. Valid JPEG and PNG files are still",
+          "                                  stripped.",
+          "  --triggered-by TEXT             Event ID that triggered this action.",
+          "  --on-behalf-of TEXT             Actor on whose behalf this action is taken.",
+          "  --reason TEXT                   Reason (provenance).",
+          "  --name TEXT                     Session name (e.g., Argus-3). Resolves to full",
+          "                                  identity.",
+          "  --actor TEXT                    Actor (e.g., human:atin, agent:claude).",
+          "                                  Deprecated: prefer --name.",
+          "  --model TEXT                    Model identifier (legacy).",
+          "  --session TEXT                  Session identifier (legacy).",
+          "  --json                          Output structured JSON.",
+          "  --quiet                         Print only the primary ID.",
+          "  --help                          Show this message and exit."
+        ]
+      }
+    },
+    {
+      "args": [
+        "issue",
+        "attach",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Usage: cli issue attach [OPTIONS] ISSUE_ID FILES...",
+          "",
+          "  Add photos and videos to an issue after filing (closed issues too).",
+          "",
+          "  All or nothing: every FILE must be a photo or video by its content (PNG, JPEG,",
+          "  HEIC, GIF, WebP; MP4, MOV, WebM; HEIC is converted to JPEG). Content the issue",
+          "  already holds is skipped.",
+          "",
+          "  A video has its metadata (which can include where it was recorded) removed by",
+          "  ffmpeg. When ffmpeg cannot do that, the video is refused unless you pass",
+          "  --keep-video-metadata.",
+          "",
+          "  JPEG and PNG location and identifying metadata are removed before filing. HEIC",
+          "  is converted to JPEG; when conversion or stripping fails, the photo is refused",
+          "  unless you pass --keep-photo-metadata. Valid JPEG and PNG files are still",
+          "  stripped when that option is present.",
+          "",
+          "Options:",
+          "  --keep-video-metadata  File a video as it is, with its metadata (which can",
+          "                         include where it was recorded), when ffmpeg cannot",
+          "                         strip it. Without this, such a video is refused.",
+          "  --keep-photo-metadata  File a photo as it is when metadata stripping fails,",
+          "                         including HEIC when no converter is available. Valid",
+          "                         JPEG and PNG files are still stripped.",
+          "  --triggered-by TEXT    Event ID that triggered this action.",
+          "  --on-behalf-of TEXT    Actor on whose behalf this action is taken.",
+          "  --reason TEXT          Reason (provenance).",
+          "  --name TEXT            Session name (e.g., Argus-3). Resolves to full",
+          "                         identity.",
+          "  --actor TEXT           Actor (e.g., human:atin, agent:claude). Deprecated:",
+          "                         prefer --name.",
+          "  --model TEXT           Model identifier (legacy).",
+          "  --session TEXT         Session identifier (legacy).",
+          "  --json                 Output structured JSON.",
+          "  --quiet                Print only the primary ID.",
+          "  --help                 Show this message and exit."
+        ]
+      }
+    },
+    {
+      "args": [
+        "server",
+        "project",
+        "import",
+        "--help"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Usage: cli server project import [OPTIONS] SLUG",
+          "",
+          "  Import a local board as a new project; the source is never modified.",
+          "",
+          "  Refuses a board that fails lattice doctor, a symbolic link or special file",
+          "  under a durable path, and an existing slug. Copies referenced issue media by",
+          "  default; --omit-media imports metadata only. Prints the paths it does not",
+          "  copy, the media inventory, and the steps that finish the move.",
+          "",
+          "Options:",
+          "  --from PATH            The directory that holds the board's .lattice/ (a copy",
+          "                         of it, writers stopped).  [required]",
+          "  --omit-media           Import issue metadata without reading or copying issue",
+          "                         media bytes.",
+          "  --keep-photo-metadata  Keep malformed JPEG/PNG and HEIC originals when the",
+          "                         importer cannot sanitize them.",
+          "  --root TEXT            Server root (default: $LATTICE_SERVER_ROOT, else",
+          "                         $XDG_DATA_HOME/lattice-server).",
+          "  --json                 Output as JSON.",
+          "  --help                 Show this message and exit."
         ]
       }
     }
