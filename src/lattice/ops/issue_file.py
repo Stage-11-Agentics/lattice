@@ -87,7 +87,13 @@ class IssueFileParams(CommonParams):
         if self.title is not None and self.text is not None:
             raise OpError("VALIDATION_ERROR", "Provide title or legacy text, not both.")
         raw_title = self.title if self.title is not None else self.text
-        if raw_title is None or not raw_title.strip():
+        if raw_title is None:
+            raise OpError(
+                "VALIDATION_ERROR",
+                "Issue title is required.",
+                {"reason": "MISSING_PARAM", "param": "title"},
+            )
+        if not raw_title.strip():
             raise OpError("VALIDATION_ERROR", "Issue title must not be empty.")
         if self.confidence is not None and self.confidence not in CONFIDENCE_VALUES:
             raise OpError(

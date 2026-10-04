@@ -108,6 +108,8 @@ An issue is an observation, not a commitment: "the footer overlaps the CTA at 40
 
 **Title and description.** File an issue with a short title and, optionally, `--description TEXT` or `--description-file PATH`. Titles may be up to 120 characters. At filing, a longer first line is cut at the greatest qualifying `". "`, `"; "` or `" — "` separator starting at index 40 and ending within character 120; a period is kept, while a semicolon or dash is dropped. If none qualifies, the title ends at the last space at or before character 120. The full input becomes the description, followed by an explicit description after a blank line. A multi-line title uses its first non-empty line as the title and the remaining lines as the description. A short title with trailing description lines is not marked as shortened.
 
+At the `issue.file` operation boundary, legacy callers may supply `text` instead of `title`, never both; new events, snapshots and JSON views use `title` and `description`.
+
 Old text-only issues are read through the same frozen split rule and their logs are not rewritten. Their JSON views expose `title` and `description`, not `text`. The first edit materializes both values into the event log. `issue edit` accepts `--title` only when it is a single line of at most 120 characters; put additional detail in `--description`. Passing `--description ""` clears the description, and whitespace-only descriptions are empty.
 
 `lattice issue list` prints one row per issue, with its columns aligned: ID, state, confidence (`-` when none was given), the title, then the linked tasks and their statuses:

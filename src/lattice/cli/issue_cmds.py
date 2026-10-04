@@ -491,6 +491,9 @@ def _media_notes(
             elif reason == "converted":
                 lines.append(f"{name}: converted from HEIC to JPEG")
             elif reason == "remuxed" and detail == "metadata_stripped":
+                if record["sizes"]:
+                    before, after = record["sizes"]
+                    note.update(from_size_bytes=before, size_bytes=after)
                 lines.append(
                     f"{name}: remuxed without metadata (already H.264, smaller than re-encoded)"
                 )

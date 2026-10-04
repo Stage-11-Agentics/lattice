@@ -444,9 +444,11 @@ def test_remuxed_video_note_says_metadata_was_stripped(
 ) -> None:
     from lattice.integrations.ffmpeg import PreparedVideo
 
+    stored = mp4()
+
     def remux(_src, content, content_type, sha256):  # noqa: ANN001
         return PreparedVideo(
-            content=mp4(),
+            content=stored,
             content_type="video/mp4",
             video={"width": 64, "height": 48, "duration_ms": 1000},
             converted_from={
@@ -474,6 +476,8 @@ def test_remuxed_video_note_says_metadata_was_stripped(
         "media_n": 1,
         "reason": "remuxed",
         "detail": "metadata_stripped",
+        "from_size_bytes": (files / "repro.mov").stat().st_size,
+        "size_bytes": len(stored),
     }
 
 
@@ -634,6 +638,28 @@ def test_detach_removes_the_file_and_the_name(root: Path, invoke, files: Path) -
     assert invoke("issue", "media", "LAT-I1", "--paths").stdout.count("\n") == 1
     again = invoke("issue", "detach", "LAT-I1", "2", "--reason", "r", *A)
     assert again.stdout == "Media 2 of LAT-I1 was already removed\n"
+
+
+def test_detach_normalizes_zero_padded_ordinals(root: Path, invoke, files: Path) -> None:
+    ok(invoke, "issue", "file", "padded ordinals", "--evidence", str(files / "shot.png"), *A)
+    media = ok(invoke, "issue", "media", "LAT-I1")["media"][0]
+    media_path = Path(media["path"])
+
+    zero = invoke("issue", "detach", "LAT-I1", "0000000", "--reason", "test", *A, "--json")
+    assert zero.exit_code == 1, zero.output
+    assert json.loads(zero.stdout)["error"]["code"] == "NOT_FOUND"
+    assert "Traceback" not in zero.output
+
+    removed = invoke("issue", "detach", "LAT-I1", "0000001", "--reason", "test", *A)
+    assert removed.exit_code == 0, removed.output
+    assert not media_path.exists()
+
+    long_zero_padded = "0" * 5000 + "1"
+    repeated = invoke(
+        "issue", "detach", "LAT-I1", long_zero_padded, "--reason", "test", *A, "--json"
+    )
+    assert repeated.exit_code == 0, repeated.output
+    assert json.loads(repeated.stdout)["ok"] is True
 
 
 # ---------------------------------------------------------------------------
