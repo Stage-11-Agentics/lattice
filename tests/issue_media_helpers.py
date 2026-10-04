@@ -14,8 +14,10 @@ steer them:
 
 from __future__ import annotations
 
+import base64
 import json
 import struct
+import sys
 import zlib
 from pathlib import Path
 
@@ -165,3 +167,37 @@ def use_fake_ffmpeg(monkeypatch, directory: Path, **probe) -> Path:  # noqa: ANN
     monkeypatch.setenv("LATTICE_FFMPEG", str(ffmpeg))
     monkeypatch.setenv("FAKE_PROBE", probe_json(**probe))
     return ffmpeg
+
+
+def use_stdlib_fake_ffmpeg(
+    monkeypatch, directory: Path, *, source: bytes, frame: bytes, fail_transcode: bool = False
+) -> Path:  # noqa: ANN001
+    """Install Python-stdlib ffmpeg/ffprobe shims and return the argv log path."""
+    directory.mkdir(parents=True, exist_ok=True)
+    calls = directory / "ffmpeg-argv.jsonl"
+    ffmpeg = directory / "ffmpeg"
+    ffmpeg.write_text(
+        "#!" + sys.executable + "\n"
+        "import base64, json, pathlib, sys\n"
+        f"log = pathlib.Path({str(calls)!r})\n"
+        "args = sys.argv[1:]\n"
+        "with log.open('a') as handle: handle.write(json.dumps(args) + '\\n')\n"
+        "if args[-1] == '-':\n"
+        f"    sys.stdout.buffer.write(base64.b64decode({base64.b64encode(frame).decode()!r}))\n"
+        "else:\n"
+        f"    if {fail_transcode!r}: sys.exit(1)\n"
+        f"    pathlib.Path(args[-1]).write_bytes(base64.b64decode({base64.b64encode(source).decode()!r}))\n",
+        encoding="utf-8",
+    )
+    ffmpeg.chmod(0o755)
+    ffprobe = directory / "ffprobe"
+    ffprobe.write_text(
+        "#!" + sys.executable + "\n"
+        "import json\n"
+        "print(json.dumps({'streams': [{'codec_type': 'video', 'codec_name': 'h264', "
+        "'width': 64, 'height': 48, 'duration': '1'}], 'format': {'duration': '1'}}))\n",
+        encoding="utf-8",
+    )
+    ffprobe.chmod(0o755)
+    monkeypatch.setenv("LATTICE_FFMPEG", str(ffmpeg))
+    return calls

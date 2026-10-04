@@ -6,9 +6,9 @@ its location tags: a dashboard filing runs the same ffmpeg step as the CLI
 ffmpeg frames) and a HEIC photo is converted to JPEG. The step runs before the
 board lock is taken because a transcode can take minutes.
 
-Without ffmpeg the CLI sends a video as it is, with no frames. The dashboard
-keeps the browser's own dimensions and frames in that case; nothing can strip
-metadata without the tool.
+Without ffmpeg the local dashboard keeps the browser's own dimensions and
+frames. Hosted staging refuses a video instead: the browser cannot prove that
+location metadata was removed before the server stores it.
 """
 
 from __future__ import annotations
@@ -28,13 +28,19 @@ from lattice.core.issue_media import (
 from lattice.ops.task_attach import decode_payload, encode_payload
 
 
-def prepare_issue_media(items: list[dict]) -> list[dict]:
+def prepare_issue_media(
+    items: list[dict], *, refuse_video_without_ffmpeg: bool = False
+) -> list[dict]:
     """Each media item as the CLI would send it; items that fail validation pass through
-    unchanged so ``issue.file`` refuses them with its own message."""
-    return [_prepare_item(item) for item in items]
+    unchanged so ``issue.file`` refuses them with its own message. Hosted staging sets
+    ``refuse_video_without_ffmpeg`` because it cannot trust client-side metadata stripping."""
+    return [
+        _prepare_item(item, refuse_video_without_ffmpeg=refuse_video_without_ffmpeg)
+        for item in items
+    ]
 
 
-def _prepare_item(item: dict) -> dict:
+def _prepare_item(item: dict, *, refuse_video_without_ffmpeg: bool = False) -> dict:
     payload = item.get("payload")
     if not isinstance(payload, dict):
         return item
@@ -46,7 +52,14 @@ def _prepare_item(item: dict) -> dict:
     content_type = sniff_media(head)
     name = clean_original_name(filename) or "file"
     if content_type is not None and media_kind(content_type) == "video":
-        return _prepare_video(item, name, content, content_type, payload["sha256"].lower())
+        return _prepare_video(
+            item,
+            name,
+            content,
+            content_type,
+            payload["sha256"].lower(),
+            refuse_video_without_ffmpeg=refuse_video_without_ffmpeg,
+        )
     if content_type is None and sniff_heic(head):
         return _convert_heic(item, name, content, payload["sha256"].lower())
     return item
@@ -65,14 +78,30 @@ def _suffix(name: str) -> str:
     return suffix if suffix and suffix.isascii() and len(suffix) <= 8 else ".bin"
 
 
-def _prepare_video(item: dict, name: str, content: bytes, content_type: str, sha256: str) -> dict:
+def _prepare_video(
+    item: dict,
+    name: str,
+    content: bytes,
+    content_type: str,
+    sha256: str,
+    *,
+    refuse_video_without_ffmpeg: bool = False,
+) -> dict:
     from lattice.integrations.ffmpeg import prepare_video
 
     with tempfile.TemporaryDirectory(prefix="lattice-dashboard-media-") as tmp:
         src = Path(tmp) / f"video{_suffix(name)}"
         src.write_bytes(content)
         prepared = prepare_video(src, content, content_type, sha256)
-    if ("no_frames", "ffmpeg_not_found") in prepared.notes:
+    ffmpeg_missing = ("no_frames", "ffmpeg_not_found") in prepared.notes
+    if refuse_video_without_ffmpeg and prepared.converted_from is None:
+        message = (
+            "This server cannot remove location data from videos yet; ask the board admin to install ffmpeg"
+            if ffmpeg_missing
+            else "This server could not remove location data from this video; ask the board admin to check its ffmpeg"
+        )
+        raise OpError("MEDIA_STAGE_UNAVAILABLE", message)
+    if ffmpeg_missing:
         return item
     out: dict = {**_unknown_keys(item), "payload": encode_payload(name, prepared.content)}
     if prepared.video:

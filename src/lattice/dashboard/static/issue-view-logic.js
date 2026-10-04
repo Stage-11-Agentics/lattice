@@ -324,7 +324,7 @@
     return "An issue needs a title.";
   }
 
-  // A board where issues cannot be read here (hosted, or a bound checkout) answers LOCAL_ONLY.
+  // A restricted issue endpoint can still report LOCAL_ONLY when its data is unavailable here.
   function isUnavailable(error) {
     return !!error && error.code === "LOCAL_ONLY";
   }

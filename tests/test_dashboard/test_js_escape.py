@@ -97,9 +97,33 @@ def test_assets_and_api_calls_use_the_base_path() -> None:
         "  url: function(path) { return apiUrl(BASE_PATH, path); },"
     )
     assert reads in html and writes in html
-    assert re.search(r"fetch\(", html.replace(reads, "").replace(writes, "")) is None, (
-        "every fetch goes through api()/apiPost(), which resolve against the base path"
+    upload = re.search(
+        r"async function uploadIssueMedia\(file\) \{\s*"
+        r"return IssueUpload\.uploadIssueMedia\(file,\s*\{[\s\S]*?"
+        r"url: function\(path\) \{ return apiUrl\(BASE_PATH, path\); \}\s*\}\);",
+        html,
     )
+    assert upload is not None, "the issue-media upload must pass a base-path-aware URL resolver"
+    upload_module = (STATIC / "issue-upload.js").read_text()
+    assert '<script src="static/issue-upload.js"></script>' in html
+    assert "options.fetch(options.url(" in upload_module, (
+        "the upload module must use the injected base-path-aware URL resolver"
+    )
+    remaining = html.replace(reads, "").replace(writes, "").replace(upload.group(0), "")
+    assert re.search(r"fetch\(", remaining) is None, (
+        "every fetch must use api()/apiPost() or explicitly resolve against the base path"
+    )
+
+
+def test_issue_view_read_only_comes_from_bound_checkout_config() -> None:
+    html = INDEX_HTML.read_text()
+    assert 'api("/api/config")' in html
+    assert "config = results[0];" in html
+    assert (
+        "var issueReadOnly = !!(config && config.dashboard_mode && config.dashboard_mode.bound_checkout);"
+        in html
+    )
+    assert re.search(r"readOnly\s*:\s*issueReadOnly\b", html)
 
 
 def test_status_and_legend_markup_goes_through_the_tested_helpers() -> None:

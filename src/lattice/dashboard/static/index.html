@@ -1664,6 +1664,7 @@ select.form-control{cursor:pointer}
 <!-- newOpId, hostedSlug, retryDelay, createLiveRefresh: stream refresh and retry-safe
      writes on a hosted dashboard (SPEC §8.6, §10), tested in tests/js/live.test.js -->
 <script src="static/live.js"></script>
+<script src="static/issue-upload.js"></script>
 <script>
 (function(){
 "use strict";
@@ -2320,6 +2321,7 @@ function _loadIssueScript(file) {
 async function _prepareIssueDashboard() {
   var oldTab = document.querySelector('.nav-tab[data-view="issues"]');
   var oldButton = document.getElementById("issue-new-button");
+  var issueReadOnly = !!(config && config.dashboard_mode && config.dashboard_mode.bound_checkout);
   if (!_issuesEnabled()) {
     if (_issueDashboard) { _issueDashboard.destroy(); _issueDashboard = null; }
     if (oldTab) oldTab.remove();
@@ -2328,6 +2330,8 @@ async function _prepareIssueDashboard() {
     if (issueCss) issueCss.remove();
     return;
   }
+
+  if (issueReadOnly && oldButton) { oldButton.remove(); oldButton = null; }
 
   if (!oldTab) {
     oldTab = document.createElement("span");
@@ -2338,7 +2342,7 @@ async function _prepareIssueDashboard() {
     var activityTab = document.querySelector('.nav-tab[data-view="activity"]');
     activityTab.parentNode.insertBefore(oldTab, activityTab);
   }
-  if (!HOSTED_SLUG && !oldButton) {
+  if (!issueReadOnly && !oldButton) {
     oldButton = document.createElement("button");
     oldButton.type = "button";
     oldButton.id = "issue-new-button";
@@ -2362,7 +2366,8 @@ async function _prepareIssueDashboard() {
     if (!_issueDashboard) {
       _issueDashboard = window.IssueDashboard.mount({
         app: document.getElementById("app"), api: api, apiPost: apiPost, esc: esc,
-        hosted: !!HOSTED_SLUG, basePath: BASE_PATH, showToast: showToast,
+        hosted: !!HOSTED_SLUG, readOnly: issueReadOnly, basePath: BASE_PATH, showToast: showToast,
+        uploadIssueMedia: uploadIssueMedia,
         mediaLimits: function() { return window.IssueViewLogic.mediaLimits(config); }
       });
     }
@@ -2424,6 +2429,14 @@ var pageWriter = createWriter({
 
 function apiPost(path, data) {
   return pageWriter.post(path, data);
+}
+
+async function uploadIssueMedia(file) {
+  return IssueUpload.uploadIssueMedia(file, {
+    crypto: window.crypto,
+    fetch: fetch.bind(window),
+    url: function(path) { return apiUrl(BASE_PATH, path); }
+  });
 }
 
 // --- Delegated page actions ---

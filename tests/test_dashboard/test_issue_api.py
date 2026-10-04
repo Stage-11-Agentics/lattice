@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import json
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -15,7 +16,7 @@ from lattice.dashboard import api
 from lattice.ops import Caller, OpError, get_operation
 from lattice.ops.task_attach import encode_payload
 from lattice.storage.fs import atomic_write, ensure_lattice_dirs
-from tests.issue_media_helpers import jpeg, mp4, png
+from tests.issue_media_helpers import jpeg, mp4, png, use_stdlib_fake_ffmpeg
 
 
 @pytest.fixture()
@@ -77,6 +78,22 @@ def test_enabled_issue_list_and_detail_use_the_dashboard_contract(issue_board) -
     assert all("path" not in media for media in detail["media"])
 
 
+def test_issue_history_maps_linked_and_unlinked_tasks_to_short_ids(issue_board) -> None:  # noqa: ANN001
+    board, lattice_dir, config = issue_board
+    config["project_code"] = "LAT"
+    enable_issues(lattice_dir, config)
+    task = board.execute("task.create", {"title": "Story"}, Caller(actor="agent:qa")).value
+    issue = file_issue(board, "Linked story")
+    caller = Caller(actor="agent:qa")
+    board.execute("issue.link", {"issue": issue["id"], "task": task["id"]}, caller)
+    board.execute("issue.unlink", {"issue": issue["id"], "task": task["id"]}, caller)
+
+    detail = data(api.route_get(lattice_dir, f"/api/issues/{issue['id']}"))
+
+    assert detail["tasks"] == []
+    assert detail["task_short_ids"] == {task["id"]: task["short_id"]}
+
+
 def test_by_filter_marks_file_activity_across_the_issue_list(issue_board) -> None:  # noqa: ANN001
     board, lattice_dir, config = issue_board
     enable_issues(lattice_dir, config)
@@ -87,6 +104,25 @@ def test_by_filter_marks_file_activity_across_the_issue_list(issue_board) -> Non
     assert [row["id"] for row in rows] == [own["id"]]
     assert rows[0]["matched_by"] == "filed"
     assert rows[0]["actor_activity_at"] == own["filed_at"]
+
+
+def test_issue_list_media_urls_keep_the_local_route_for_all_and_by_actor(issue_board) -> None:  # noqa: ANN001
+    board, lattice_dir, config = issue_board
+    enable_issues(lattice_dir, config)
+    issue = board.execute(
+        "issue.file",
+        {
+            "text": "Local list media",
+            "media": [{"payload": encode_payload("shot.png", png())}],
+        },
+        Caller(actor="human:atin"),
+    ).value
+
+    for query in ("", urlencode({"by": "human:atin"})):
+        rows = data(api.route_get(lattice_dir, "/api/issues", query))
+        row = next(item for item in rows if item["id"] == issue["id"])
+        media = row["media"][0]
+        assert media["url"] == f"/api/issues/{issue['id']}/media/{media['id']}"
 
 
 def test_by_filter_keeps_full_human_session_keys_exact(issue_board) -> None:  # noqa: ANN001
@@ -195,6 +231,18 @@ def test_comment_translation_stays_on_the_registered_operation_boundary() -> Non
         api.translate_post(
             "/api/issues/LAT-I1/comment", {"body": "Reply", "parent_id": "comment-id"}
         )
+
+
+@pytest.mark.parametrize("actor", ["agent: ", "human:\t", "team:\n", "dashboard:  "])
+def test_local_dashboard_body_actor_rejects_whitespace_only_identifier(
+    issue_board, actor: str
+) -> None:  # noqa: ANN001
+    board, lattice_dir, config = issue_board
+    enable_issues(lattice_dir, config)
+    request = api.translate_post("/api/issues", {"title": "Invalid actor", "actor": actor})
+
+    with pytest.raises(OpError, match="Invalid actor"):
+        board.execute(request.op_name, request.params, Caller(actor=request.actor))
 
 
 def test_dismiss_and_reopen_translate_to_the_registered_operations() -> None:
@@ -322,6 +370,21 @@ def test_one_unreadable_issue_is_skipped_not_a_500(issue_board) -> None:  # noqa
     assert [row["id"] for row in by] == [good["id"]]
 
 
+def test_dashboard_translation_rejects_unknown_media_item_keys_early() -> None:
+    item = {"payload": encode_payload("clip.mp4", mp4()), "path": "/tmp/secret"}
+
+    with pytest.raises(api.ApiError) as refused:
+        api.translate_post("/api/issues", {"title": "Bad shape", "media": [item]})
+
+    assert refused.value.code == "VALIDATION_ERROR"
+    assert "media item 1" in refused.value.message
+
+
+def test_human_author_strips_the_configured_identifier_and_rejects_blank_names() -> None:
+    assert api.human_author({"default_actor": "human: atin "}) == "human:atin"
+    assert api.human_author({"default_actor": "human: "}) is None
+
+
 def test_dashboard_video_goes_through_the_cli_media_step(  # noqa: ANN001
     monkeypatch, tmp_path
 ) -> None:
@@ -356,6 +419,39 @@ def test_dashboard_video_goes_through_the_cli_media_step(  # noqa: ANN001
     from lattice.ops.task_attach import decode_payload
 
     assert decode_payload(prepared["payload"])[1].startswith(b"stripped-")
+
+
+def test_dashboard_geo_strip_invocation_uses_stdlib_fixture(tmp_path: Path, monkeypatch) -> None:
+    """CI has no ffmpeg; pin the real dashboard prep path's metadata-free invocation."""
+    from lattice.dashboard import media_prep
+    from lattice.ops.task_attach import decode_payload
+
+    source = mp4()
+    frame = jpeg()
+    calls = use_stdlib_fake_ffmpeg(monkeypatch, tmp_path / "tools", source=source, frame=frame)
+
+    [prepared] = media_prep.prepare_issue_media([{"payload": encode_payload("geo.mp4", source)}])
+
+    commands = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+    assert any(
+        any(argv[index : index + 2] == ["-map_metadata", "-1"] for index in range(len(argv) - 1))
+        for argv in commands
+    )
+    assert prepared["frames"]
+    assert decode_payload(prepared["payload"])[1] == source
+
+
+def test_local_dashboard_keeps_video_when_ffmpeg_is_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from lattice.dashboard import media_prep
+
+    monkeypatch.setenv("LATTICE_FFMPEG", "off")
+    item = {"payload": encode_payload("geo.mp4", mp4())}
+
+    assert media_prep.prepare_issue_media([item]) == [item]
+    with pytest.raises(OpError, match="cannot remove location data from videos"):
+        media_prep.prepare_issue_media([item], refuse_video_without_ffmpeg=True)
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")

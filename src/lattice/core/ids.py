@@ -148,7 +148,7 @@ def validate_actor(actor_str: str) -> bool:
         return False
 
     prefix, identifier = parts
-    if not prefix or not identifier:
+    if not prefix or not identifier.strip():
         return False
 
     return prefix in _VALID_ACTOR_PREFIXES

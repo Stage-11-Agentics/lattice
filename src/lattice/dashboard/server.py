@@ -48,6 +48,13 @@ __all__ = ["MAX_REQUEST_BODY_BYTES", "STATIC_DIR", "create_server", "origin_allo
 # hard-bound it even when the board owner raises the media settings.
 MAX_ISSUE_FILE_BODY_BYTES = 2 * 1024 * 1024 * 1024
 
+# A bound checkout exposes issue metadata, but the cached board is read-only.
+_BOUND_CHECKOUT_ISSUES_READ_ONLY = (
+    400,
+    "LOCAL_ONLY",
+    "This bound checkout is read-only. File and comment on the hosted dashboard or with 'lattice issue'.",
+)
+
 
 def issue_file_body_limit(lattice_dir: Path) -> int:
     """Bound quick-file JSON from configured media limits and frame overhead."""
@@ -193,9 +200,6 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
             if not host_allowed(self.headers.get("Host"), self.server.server_address[0]):
                 self._send_error(403, "FORBIDDEN", "Non-loopback Host refused")
                 return
-            if self._target.hosted and _is_issue_api_path(path):
-                self._send_error(*api.ISSUES_UNAVAILABLE)
-                return
             if media.MEDIA_ROUTE.fullmatch(path):
                 self.connection.settimeout(media.SOCKET_TIMEOUT)
                 media.serve_issue_media(self, self._target, path)
@@ -237,8 +241,21 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                 try:
                     with self._target.read() as ld:
                         response = api.route_get(
-                            ld, path, parsed.query, self.headers.get("If-None-Match")
+                            ld,
+                            path,
+                            parsed.query,
+                            self.headers.get("If-None-Match"),
+                            issue_media_route=(
+                                None if self._target.hosted else "/api/issues/{issue_id}/media"
+                            ),
                         )
+                        if (
+                            path == "/api/config"
+                            and self._target.hosted
+                            and response.envelope is not None
+                            and response.envelope.get("ok") is True
+                        ):
+                            response.envelope["data"]["dashboard_mode"] = {"bound_checkout": True}
                 except OpError as exc:  # a bound checkout's cache cannot be read
                     refused = ApiError.from_op_error(exc)
                     response = ApiResponse(refused.status, refused.envelope())
@@ -288,7 +305,7 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
 
             if _is_issue_api_path(path):
                 if self._target.hosted:
-                    self._send_error(*api.ISSUES_UNAVAILABLE)
+                    self._send_error(*_BOUND_CHECKOUT_ISSUES_READ_ONLY)
                     return None
                 try:
                     with self._target.read() as ld:

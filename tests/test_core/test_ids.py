@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lattice.core.ids import (
     extract_short_ids,
     generate_artifact_id,
@@ -178,6 +180,10 @@ class TestValidateActorBadFormat:
 
     def test_empty_identifier(self) -> None:
         assert validate_actor("agent:") is False
+
+    @pytest.mark.parametrize("prefix", ["agent", "human", "team", "dashboard"])
+    def test_whitespace_only_identifier(self, prefix: str) -> None:
+        assert validate_actor(f"{prefix}: \t\n") is False
 
     def test_only_colon(self) -> None:
         assert validate_actor(":") is False

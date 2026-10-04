@@ -12,6 +12,7 @@
     var apiPost = options.apiPost;
     var esc = options.esc;
     var hosted = options.hosted;
+    var readOnly = !!options.readOnly;
     var logic = root.IssueViewLogic;
     var queues = logic.QUEUES;
     var issues = [];
@@ -135,21 +136,22 @@
       app.innerHTML = '<div class="issue-inbox">' +
         '<section class="issue-q-pane" aria-label="Issue queue">' +
           '<div class="issue-q-tabs" id="issue-q-tabs"></div>' +
+          (readOnly ? '<p class="issue-readonly-note" role="note">This bound checkout is read-only. File and comment on the hosted dashboard or with <code>lattice issue</code>.</p>' : "") +
           '<div class="issue-person-head" id="issue-person-head"></div>' +
           '<div class="issue-q-list" id="issue-q-list" role="listbox" aria-label="Issues"></div>' +
           '<div class="issue-q-foot"><kbd>j</kbd><kbd>k</kbd> move<span class="sep"></span><kbd>c</kbd> copy ID<span class="sep"></span><kbd>f</kbd> look closer' +
-            (hosted ? "" : '<span class="sep"></span><kbd>i</kbd> file') + "</div>" +
+            (readOnly ? "" : '<span class="sep"></span><kbd>i</kbd> file') + "</div>" +
         "</section>" +
         '<section class="issue-d-pane" aria-label="Selected issue">' +
           '<div class="issue-d-head" id="issue-d-head"><button type="button" class="issue-id-copy" id="issue-id-copy" title="Copy the ID (c), to tell an agent what to do with it" disabled></button>' +
             '<span class="issue-copy-status" id="issue-copy-status"></span><span id="issue-d-state"></span><span class="issue-d-facts" id="issue-d-facts"></span>' +
-            '<button type="button" class="btn btn-sm issue-triage off" id="issue-triage" disabled>Close</button>' +
+            (readOnly ? "" : '<button type="button" class="btn btn-sm issue-triage off" id="issue-triage" disabled>Close</button>' +
             '<div class="issue-close-pop" id="issue-close-pop" role="group" aria-label="Close this issue">' +
               '<input type="text" id="issue-close-reason" autocomplete="off" maxlength="500" placeholder="Why is this closed? (required)" aria-label="Reason for closing">' +
               '<div class="issue-close-err" id="issue-close-err" role="alert"></div>' +
               '<div class="issue-close-actions"><button type="button" class="btn btn-sm" id="issue-close-cancel">Cancel</button>' +
               '<button type="button" class="btn btn-sm issue-close-go" id="issue-close-go" disabled>Close issue</button></div>' +
-            "</div></div>" +
+            "</div>") + "</div>" +
           '<div class="issue-d-body" id="issue-d-body"></div>' +
         "</section></div>";
       var tabs = document.getElementById("issue-q-tabs");
@@ -175,7 +177,7 @@
         var actor = event.target.closest("[data-actor]");
         if (actor) enterPerson(actor.getAttribute("data-actor"));
       });
-      wireTriage();
+      if (!readOnly) wireTriage();
       document.getElementById("issue-d-body").addEventListener("click", onDetailClick);
       document.getElementById("issue-d-body").addEventListener("dblclick", function (event) {
         var figure = event.target.closest(".issue-media-item");
@@ -188,7 +190,10 @@
     function showUnavailable() {
       setActive(false);
       mediaKey = null;
-      app.innerHTML = '<section class="issue-unavailable"><h1>Issues</h1><p>Issues are not available on this board yet.</p></section>';
+      var message = readOnly
+        ? "This bound checkout cannot read the Issues mirror right now. View issues on the hosted dashboard or with lattice issue."
+        : "Issues are not available on this board yet.";
+      app.innerHTML = '<section class="issue-unavailable"><h1>Issues</h1><p>' + esc(message) + "</p></section>";
     }
     function markUnavailable() {
       unavailable = true;
@@ -198,7 +203,7 @@
 
     // ---- loading and refreshing ----
     async function loadIssues() {
-      if (hosted || destroyed || unavailable) return;
+      if (destroyed || unavailable) return;
       var wasLoaded = loaded;
       var previousIssues = issues;
       var previousPersonRows = personRows;
@@ -259,7 +264,7 @@
       }
     }
     async function loadPersonIssues(actor, parentGeneration) {
-      if (hosted || destroyed) return;
+      if (destroyed) return;
       var rows = await api("/api/issues?by=" + encodeURIComponent(actor));
       if (destroyed || (parentGeneration != null && parentGeneration !== requestGeneration)) return;
       personRows = Array.isArray(rows) ? logic.sortPersonIssues(rows, actor) : [];
@@ -274,7 +279,7 @@
     }
     // The nav count on every other view; the Inbox keeps it current itself.
     function refreshCount() {
-      if (hosted || destroyed || unavailable || active || countLoading) return Promise.resolve();
+      if (destroyed || unavailable || active || countLoading) return Promise.resolve();
       countLoading = true;
       return api("/api/issues").then(function (rows) {
         if (!destroyed && Array.isArray(rows)) setNavCount(rows);
@@ -292,7 +297,7 @@
       }
     }
     function refresh() {
-      if (hosted || unavailable) { active = true; showUnavailable(); return Promise.resolve(); }
+      if (unavailable) { active = true; showUnavailable(); return Promise.resolve(); }
       active = true;
       if (!document.getElementById("issue-q-tabs")) { render(); return Promise.resolve(); }
       setActive(true);
@@ -302,7 +307,7 @@
       renderOptions = renderOptions || {};
       if (destroyed) return;
       active = true;
-      if (hosted || unavailable) { showUnavailable(); return; }
+      if (unavailable) { showUnavailable(); return; }
       setActive(true);
       var tabs = document.getElementById("issue-q-tabs");
       var fresh = !tabs;
@@ -483,7 +488,7 @@
       return details[issue.id] || issue;
     }
     async function ensureDetail(issue) {
-      if (!issue || hosted || detailsLoading[issue.id] || details[issue.id] && !detailsStale[issue.id]) return;
+      if (!issue || detailsLoading[issue.id] || details[issue.id] && !detailsStale[issue.id]) return;
       var id = issue.id;
       var epoch = detailEpochs[id] || 0;
       var retry = false;
@@ -528,13 +533,14 @@
       return '<h1 class="issue-d-title" id="issue-d-title"></h1><div class="issue-d-desc" id="issue-d-desc"></div>' +
         '<div class="issue-d-media" id="issue-d-media"></div><div class="issue-outcome" id="issue-outcome"></div>' +
         '<div class="issue-comments" id="issue-comments"></div>' +
-        '<div class="issue-compose" id="issue-compose"><textarea id="issue-comment-box" rows="1" placeholder="Comment, or ask an agent: @claude-opus-impl ..."></textarea>' +
-        '<button type="button" class="btn btn-sm" id="issue-comment-post" title="Post (⌘ Enter)">Post</button></div><div id="issue-history"></div>';
+        (readOnly ? "" : '<div class="issue-compose" id="issue-compose"><textarea id="issue-comment-box" rows="1" placeholder="Comment, or ask an agent: @claude-opus-impl ..."></textarea>' +
+        '<button type="button" class="btn btn-sm" id="issue-comment-post" title="Post (⌘ Enter)">Post</button></div>') + '<div id="issue-history"></div>';
     }
     function wireCompose() {
       var box = document.getElementById("issue-comment-box");
       var wrap = document.getElementById("issue-compose");
       var post = document.getElementById("issue-comment-post");
+      if (!box || !wrap || !post) return;
       box.addEventListener("focus", function () { wrap.classList.add("active"); });
       box.addEventListener("blur", function () { if (!box.value.trim()) wrap.classList.remove("active"); });
       box.addEventListener("keydown", function (event) {
@@ -583,8 +589,10 @@
       setTextIfChanged(document.getElementById("issue-d-desc"), detail.description || "");
       setHtmlIfChanged(document.getElementById("issue-comments"), commentsHtml(detail));
       if (changed) {
-        document.getElementById("issue-comment-box").value = "";
-        document.getElementById("issue-compose").classList.remove("active");
+        var commentBox = document.getElementById("issue-comment-box");
+        var compose = document.getElementById("issue-compose");
+        if (commentBox) commentBox.value = "";
+        if (compose) compose.classList.remove("active");
       }
       renderMedia(detail);
       setHtmlIfChanged(document.getElementById("issue-outcome"), outcomeHtml(detail));
@@ -674,6 +682,7 @@
     }
     function wireTriage() {
       var el = triageEls();
+      if (!el.button || !el.pop || !el.input || !el.go) return;
       el.button.addEventListener("click", function () {
         var action = el.button.getAttribute("data-triage");
         if (action === "reopen") { el.button.blur(); postReopen(); return; }
@@ -698,6 +707,7 @@
       refresh();
     }
     function postClose() {
+      if (readOnly) return;
       var issue = current();
       var el = triageEls();
       var reason = el.input ? el.input.value.trim() : "";
@@ -721,6 +731,7 @@
       });
     }
     function postReopen() {
+      if (readOnly) return;
       var issue = current();
       if (!issue || reopening) return;
       reopening = true;
@@ -733,6 +744,7 @@
       });
     }
     function postComment() {
+      if (readOnly) return;
       var issue = current();
       var box = document.getElementById("issue-comment-box");
       if (!issue || !box || !box.value.trim()) return;
@@ -746,7 +758,14 @@
       }).catch(function (error) { options.showToast(error.message || String(error), "error"); });
     }
     // One history line; a filing's own media arrive folded in (logic.historyEntries).
-    function eventHistoryLine(event) {
+    function taskHistoryLabel(issue, data) {
+      var id = data.task_id;
+      var tasks = Array.isArray(issue.tasks) ? issue.tasks : [];
+      var task = tasks.find(function (entry) { return entry && entry.id === id; });
+      var historyIds = issue.task_short_ids || {};
+      return (task && task.short_id) || historyIds[id] || data.task_short_id || id || "task";
+    }
+    function eventHistoryLine(event, issue) {
       var data = event.data || {};
       var what;
       switch (event.type) {
@@ -756,8 +775,8 @@
           what = "filed" + (count ? " with " + esc(count) : "");
           break;
         }
-        case "issue_linked": what = (data.promoted ? "made story " : "linked to ") + '<span class="issue-tid">' + esc(data.task_id || "task") + "</span>"; break;
-        case "issue_unlinked": what = 'unlinked from <span class="issue-tid">' + esc(data.task_id || "task") + "</span>"; break;
+        case "issue_linked": what = (data.promoted ? "made story " : "linked to ") + '<span class="issue-tid">' + esc(taskHistoryLabel(issue, data)) + "</span>"; break;
+        case "issue_unlinked": what = 'unlinked from <span class="issue-tid">' + esc(taskHistoryLabel(issue, data)) + "</span>"; break;
         case "issue_dismissed": what = "dismissed: " + esc(data.reason || ""); break;
         case "issue_marked_duplicate": what = 'marked a duplicate of <span class="issue-iid">' + esc(issueRef(data.duplicate_of || "issue")) + "</span>"; break;
         case "issue_reopened": what = "reopened"; break;
@@ -777,7 +796,9 @@
       if (!box) return;
       setHtmlIfChanged(box, '<button type="button" class="issue-history-toggle" aria-expanded="' + historyOpen + '"><span class="caret">' +
         (historyOpen ? "▾" : "▸") + "</span>History (" + history.length + ")</button>" +
-        (historyOpen ? '<div class="issue-history">' + history.map(eventHistoryLine).join("") + "</div>" : ""));
+        (historyOpen ? '<div class="issue-history">' + history.map(function (event) {
+          return eventHistoryLine(event, issue);
+        }).join("") + "</div>" : ""));
     }
 
     // ---- media inline ----
@@ -953,12 +974,12 @@
       if (event.key === " " && event.target.closest && event.target.closest("#issue-triage")) return;
       var key = event.key;
       if (key === "i") {
-        if (hosted) return;
+        if (readOnly) return;
         event.preventDefault();
         openFileDialog();
         return;
       }
-      if (!active || unavailable || hosted || !document.body.classList.contains("issue-view-active")) return;
+      if (!active || unavailable || !document.body.classList.contains("issue-view-active")) return;
       var handled = true;
       if (key === "j" || key === "ArrowDown") move(1);
       else if (key === "k" || key === "ArrowUp") move(-1);
@@ -1127,7 +1148,7 @@
 
     function openFileDialog(prefill) {
       prefill = prefill || {};
-      if (hosted || destroyed) return;
+      if (destroyed || readOnly) return;
       if (panel) {
         if (prefill.files) panel.addFiles(prefill.files);
         return;
@@ -1375,6 +1396,12 @@
       return frames;
     }
     async function mediaFromFile(file) {
+      if (hosted) {
+        if (typeof options.uploadIssueMedia !== "function") {
+          throw new Error("Hosted issue media upload is unavailable.");
+        }
+        return options.uploadIssueMedia(file);
+      }
       var payload = await payloadFromBlob(file, file.name || "attachment");
       if (logic.kindOf(file) !== "video") return { payload: payload };
       var objectUrl = URL.createObjectURL(file);
@@ -1397,7 +1424,7 @@
 
     // ---- paste and drop, page-wide ----
     function onPaste(event) {
-      if (destroyed || hosted) return;
+      if (destroyed || readOnly) return;
       var files = clipFiles(event.clipboardData);
       if (!files.length) return; // plain text: the browser pastes it as usual
       var textToo = hasType(event.clipboardData, "text/plain"); // a file copied in Finder also carries its name as text
@@ -1429,23 +1456,23 @@
       dropHint = null;
     }
     function onDragEnter(event) {
-      if (destroyed || hosted || !hasType(event.dataTransfer, "Files")) return;
+      if (destroyed || readOnly || !hasType(event.dataTransfer, "Files")) return;
       dragDepth++;
       showDrop();
     }
     function onDragOver(event) {
-      if (destroyed || hosted || !hasType(event.dataTransfer, "Files")) return;
+      if (destroyed || readOnly || !hasType(event.dataTransfer, "Files")) return;
       event.preventDefault();
       try { event.dataTransfer.dropEffect = "copy"; } catch (_error) { /* ignore */ }
       showDrop();
     }
     function onDragLeave(event) {
-      if (destroyed || hosted || !hasType(event.dataTransfer, "Files")) return;
+      if (destroyed || readOnly || !hasType(event.dataTransfer, "Files")) return;
       dragDepth = Math.max(0, dragDepth - 1);
       if (!dragDepth) hideDrop();
     }
     function onDrop(event) {
-      if (destroyed || hosted) return;
+      if (destroyed || readOnly) return;
       var transfer = event.dataTransfer;
       if (!hasType(transfer, "Files") && !(transfer && transfer.files && transfer.files.length)) return;
       event.preventDefault();

@@ -226,7 +226,7 @@ That is a working hosted board. Leave the server running: the examples in later 
 
 ## 5. Install
 
-The server needs the `server` extra, which adds Starlette and uvicorn. Clients need only the base install; the extra is harmless on a client.
+The server needs the `server` extra, which adds Starlette and uvicorn. Hosted dashboard video filing also needs ffmpeg and ffprobe on the server: set `LATTICE_FFMPEG` to the ffmpeg binary (ffprobe is found beside it), or leave it unset to discover both on `PATH`; supported photos do not require ffmpeg. Clients need only the base install; the extra is harmless on a client.
 
 <!-- guide: skip: installs from the network; the runner uses the repository's virtualenv -->
 ```bash
@@ -340,7 +340,7 @@ lattice server project config web --set issues.enabled=true
 
 Setting `issues.enabled` preserves the project's other `issues.*` limits and settings. Hosted issue commands read synced metadata and send writes through named server operations; an ordinary operation cannot change the project configuration.
 
-The dashboard's Issues view (the Inbox) works on local boards only for now. On a bound checkout's dashboard and on the server's hosted dashboard it answers "Issues are not available on this board yet." Use the `lattice issue` commands on hosted boards.
+The dashboard's Issues view (the Inbox) reads the authoritative issue list and detail on the server's hosted dashboard, and can file issues, add comments, and show staged media. A bound checkout's dashboard reads issue metadata from its synced mirror; it does not serve checkout-local media or accept issue writes. Hosted browser writes use the token's browser actor, even if a request body names another actor. The local single-user dashboard still honors an explicit actor and otherwise uses its configured human actor or `dashboard:web`.
 
 To bring an existing local board onto the server, import it instead of creating a project: section 14.
 
@@ -799,7 +799,7 @@ By default, import copies issue media into private server storage along with the
 lattice server project import legacy --from "$TRIAL/legacy-copy" --omit-media
 ```
 
-`--omit-media` is an explicit metadata-only choice. Issue metadata syncs to bound clients; media bytes do not enter ordinary sync, reset manifests, deltas, stream events, or audit history. When a user requests media, a bound checkout fetches it on demand into a separate private `.lattice/cache/issue-media/` cache. `lattice cache clear` removes that cache. Default import and later uploads retain the media in private server storage. Phone photos may contain location in EXIF data: Lattice does not yet strip photo metadata; a later release will. A video's metadata, which can include where it was recorded, is stripped by ffmpeg on the machine that files it, before the upload; when ffmpeg is missing, turned off (`LATTICE_FFMPEG=off`) or fails, `issue file --evidence` and `issue attach` refuse the video unless the filer passes `--keep-video-metadata` to file the original as it is.
+`--omit-media` is an explicit metadata-only choice. Issue metadata syncs to bound clients; media bytes do not enter ordinary sync, reset manifests, deltas, stream events, or audit history. When a user requests media, a bound checkout fetches it on demand into a separate private `.lattice/cache/issue-media/` cache. `lattice cache clear` removes that cache. Default import and later uploads retain the media in private server storage. Phone photos may contain location in EXIF data; Lattice does not strip photo metadata. For local CLI filing, ffmpeg strips video location metadata on the filing machine before upload; if it is missing, disabled (`LATTICE_FFMPEG=off`), or fails, `issue file --evidence` and `issue attach` refuse the video unless the filer passes `--keep-video-metadata` to keep the original. The hosted dashboard prepares raw video on the server instead and requires its ffmpeg/ffprobe toolchain (§8.12); if that toolchain is unavailable, disabled, or fails to strip location data, hosted video staging refuses. Unavailable or disabled tools return “This server cannot remove location data from videos yet; ask the board admin to install ffmpeg”; a failed transcode returns “This server could not remove location data from this video; ask the board admin to check its ffmpeg”. This video-only guard does not block supported photos.
 
 Before creating the project's staging directory or writing any imported file, the importer replays and validates source issue logs and metadata, then preflights every referenced original and frame. It refuses symlinks and special files, checks media IDs, extensions and lowercase SHA-256 fields, verifies file contents against their hashes, and calculates all three media quotas. Only after preflight succeeds does it stage the import, rebuild issue snapshots, and publish the project. Limits are 100 MiB per stored file, 250 MiB per issue including frame sidecars, and 10 GiB per project by default; the project cap is configurable as `max_issue_media_project_bytes` in `server.json`. Missing or corrupt media and any quota failure stop the default import before imported files are written. The error names an exceeded quota and says when `--omit-media` is an acceptable retry.
 
