@@ -2142,10 +2142,12 @@ def test_write_parsed_at_drain_edge_gets_explicit_refusal(populated_lattice_dir,
     import threading
 
     from lattice.dashboard import api
+    from lattice.dashboard.server import _HEADER_READ_TIMEOUT
 
     lattice_dir, _ids = populated_lattice_dir
     admission_entered = threading.Event()
     allow_admission = threading.Event()
+    header_deadline_elapsed = threading.Event()
     post_called = threading.Event()
     post_result = []
     drain_result = []
@@ -2159,29 +2161,42 @@ def test_write_parsed_at_drain_edge_gets_explicit_refusal(populated_lattice_dir,
 
     def paused_admission(request):  # noqa: ANN001
         admission_entered.set()
-        assert allow_admission.wait(3)
+        assert allow_admission.wait(5)
         return original_admit(request)
 
     monkeypatch.setattr(server, "admit_write", paused_admission)
-    writer = threading.Thread(target=lambda: post_result.append(_restart_test_post(server)))
+
+    def send_post():
+        try:
+            post_result.append(_restart_test_post(server))
+        except OSError as exc:
+            post_result.append(exc)
+
+    writer = threading.Thread(target=send_post)
     drain = threading.Thread(
         target=lambda: drain_result.append(server.begin_write_drain(timeout=3))
     )
+    deadline_timer = threading.Timer(_HEADER_READ_TIMEOUT + 0.15, header_deadline_elapsed.set)
     try:
         writer.start()
         assert admission_entered.wait(2)
         drain.start()
         with server._restart_condition:
             assert server._restart_condition.wait_for(lambda: server._draining, timeout=2)
+        deadline_timer.start()
+        assert header_deadline_elapsed.wait(3), "the test must cross the stalled-header deadline"
         allow_admission.set()
         writer.join(timeout=3)
         drain.join(timeout=3)
-        assert post_result and post_result[0][0] == 503
+        assert post_result and not isinstance(post_result[0], OSError)
+        assert post_result[0][0] == 503
         assert b"RESTARTING" in post_result[0][1]
         assert not post_called.is_set()
         assert drain_result == [(True, 0)]
     finally:
         allow_admission.set()
+        deadline_timer.cancel()
+        deadline_timer.join(timeout=1)
         if writer.is_alive():
             writer.join(timeout=2)
         if drain.is_alive():
@@ -2230,7 +2245,9 @@ def test_drain_timeout_resumes_the_same_listener(populated_lattice_dir, monkeypa
         worker.join(timeout=2)
 
 
-def test_unparsed_and_media_read_connections_do_not_hold_drain(populated_lattice_dir, monkeypatch):
+def test_partial_header_and_media_read_connections_do_not_hold_drain(
+    populated_lattice_dir, monkeypatch
+):
     import socket
     import threading
     import time
@@ -2273,13 +2290,13 @@ def test_unparsed_and_media_read_connections_do_not_hold_drain(populated_lattice
         while time.monotonic() < deadline:
             with server._restart_condition:
                 states = set(server._request_states.values())
-            if "unparsed" in states and "read" in states:
+            if "parsing" in states and "read" in states:
                 break
             time.sleep(0.01)
         else:
             pytest.fail(f"connections were not tracked before drain: {states}")
 
-        assert server.begin_write_drain(timeout=0.5) == (True, 0)
+        assert server.begin_write_drain(timeout=2) == (True, 0)
         assert server._draining is True
     finally:
         partial.close()

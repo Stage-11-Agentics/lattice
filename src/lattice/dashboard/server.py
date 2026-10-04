@@ -127,6 +127,15 @@ class _RestartAwareHTTPServer(ThreadingHTTPServer):
                 self._request_states.pop(request, None)
                 self._restart_condition.notify_all()
 
+    def begin_parse(self, request: socket.socket) -> bool:
+        """Keep drain from closing a socket while its request is being classified."""
+        with self._restart_condition:
+            if self._request_states.get(request) == "closing":
+                return False
+            self._request_states[request] = "parsing"
+            self._restart_condition.notify_all()
+            return True
+
     def admit_write(self, request: socket.socket) -> bool:
         """Admit a parsed POST, or mark it for an explicit restart refusal."""
         with self._restart_condition:
@@ -139,9 +148,16 @@ class _RestartAwareHTTPServer(ThreadingHTTPServer):
             return True
 
     def mark_read(self, request: socket.socket) -> None:
+        close_request = False
         with self._restart_condition:
-            self._request_states[request] = "read"
+            if self._draining:
+                self._request_states[request] = "closing"
+                close_request = True
+            else:
+                self._request_states[request] = "read"
             self._restart_condition.notify_all()
+        if close_request:
+            self._close_connection(request)
 
     def finish_write_response(self, request: socket.socket) -> None:
         """Release a write only after BaseHTTPRequestHandler flushed its reply."""
@@ -183,10 +199,11 @@ class _RestartAwareHTTPServer(ThreadingHTTPServer):
                     for request, state in self._request_states.items()
                     if state == "unparsed"
                 ]
+                parsing = sum(state == "parsing" for state in self._request_states.values())
                 pending = sum(
                     state in {"write", "refused"} for state in self._request_states.values()
                 )
-                if not unparsed and pending == 0:
+                if not unparsed and parsing == 0 and pending == 0:
                     return True, 0
                 if unparsed and now >= header_deadline:
                     for request in unparsed:
@@ -195,15 +212,15 @@ class _RestartAwareHTTPServer(ThreadingHTTPServer):
                     to_close = unparsed
                 else:
                     to_close = []
-                if pending and now >= deadline:
+                if (pending or parsing) and now >= deadline:
                     self._draining = False
                     self._restart_condition.notify_all()
-                    return False, pending
+                    return False, pending + parsing
                 if to_close:
                     for request in to_close:
                         self._close_connection(request)
                     continue
-                wake_at = deadline if pending else header_deadline
+                wake_at = deadline if pending or parsing else header_deadline
                 self._restart_condition.wait(max(0, wake_at - now))
 
 
@@ -336,6 +353,9 @@ def _make_handler_class(target: DashboardBoard, *, readonly: bool = False) -> ty
                     self.server.finish_write_response(self.connection)
 
         def parse_request(self) -> bool:
+            if not self.server.begin_parse(self.connection):
+                self.close_connection = True
+                return False
             parsed = super().parse_request()
             if not parsed:
                 return False
