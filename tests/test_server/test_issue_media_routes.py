@@ -60,7 +60,27 @@ def blob(size: int, seed: bytes = b"", *, head: bytes | None = None) -> bytes:
         if candidate >= 0 and (candidate + 65534) // 65535 == blocks:
             raw_size = candidate
             break
-    assert raw_size is not None, "the object is too small for a valid PNG and profile"
+    if raw_size is None:
+        # Small quota fixtures cannot fit a valid iCCP chunk. Use a valid
+        # grayscale IDAT stream of the requested size instead.
+        signature = b"\x89PNG\r\n\x1a\n"
+
+        def png_chunk(kind: bytes, payload: bytes) -> bytes:
+            body = kind + payload
+            return struct.pack(">I", len(payload)) + body + struct.pack(">I", zlib.crc32(body))
+
+        for width in range(1, size):
+            pixels = (seed + b"\x00" * width)[:width]
+            ihdr = struct.pack(">IIBBBBB", width, 1, 8, 0, 0, 0, 0)
+            data = (
+                signature
+                + png_chunk(b"IHDR", ihdr)
+                + png_chunk(b"IDAT", zlib.compress(b"\x00" + pixels, level=0))
+                + png_chunk(b"IEND", b"")
+            )
+            if len(data) == size:
+                return data
+        raise AssertionError("the requested size cannot hold a valid synthetic PNG")
 
     raw_profile = (seed + b"\x00" * raw_size)[:raw_size]
     compressed = bytearray(b"\x78\x01")
