@@ -38,6 +38,8 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 # Module-level state for SIGHUP restart coordination.
 _stop_requested = False
+_stop_signal_count = 0
+_RESTARTED_ENV = "LATTICE_DASHBOARD_RESTARTED"
 
 
 def _handle_sighup(signum, frame):  # noqa: ARG001
@@ -46,8 +48,16 @@ def _handle_sighup(signum, frame):  # noqa: ARG001
 
 def _handle_sigterm(signum, frame):  # noqa: ARG001
     """Ask the serving loop to stop without waiting inside the signal handler."""
-    global _stop_requested
+    global _stop_requested, _stop_signal_count
     _stop_requested = True
+    _stop_signal_count += 1
+
+
+def _request_stop() -> None:
+    """Record a stop request raised by a terminal interrupt."""
+    global _stop_requested, _stop_signal_count
+    _stop_requested = True
+    _stop_signal_count += 1
 
 
 def _runtime_dir() -> Path:
@@ -161,6 +171,9 @@ def _make_launch_record(
         "json": output_json,
         "readonly": readonly,
         "root_override": root_override,
+        "lattice_env_names": sorted(
+            name for name in os.environ if name.startswith("LATTICE_") and name != _RESTARTED_ENV
+        ),
         "started_ns": time.time_ns(),
     }
 
@@ -200,6 +213,19 @@ def _probe_dashboard(host: str, port: int, timeout: float = 0.4) -> dict | None:
         return None
     finally:
         connection.close()
+
+
+def _wait_for_dashboard_identity(host: str, port: int, pid: int, boot_id: str) -> bool:
+    """Retry a listener identity probe briefly before refusing to stop it."""
+    deadline = time.monotonic() + 2.0
+    while True:
+        boot = _probe_dashboard(host, port)
+        if boot is not None and boot.get("pid") == pid and boot.get("boot_id") == boot_id:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.1, remaining))
 
 
 def _listening_processes(port: int) -> dict[int, list[str]]:
@@ -396,6 +422,8 @@ def _reuse_completed_restart(port: int, requested_ns: int) -> bool:
     if (
         state is None
         or state.get("status") != "complete"
+        or not isinstance(state.get("spawned_ns"), int)
+        or state["spawned_ns"] < requested_ns
         or not isinstance(state.get("completed_ns"), int)
         or state["completed_ns"] < requested_ns
     ):
@@ -414,11 +442,40 @@ def _reuse_completed_restart(port: int, requested_ns: int) -> bool:
     boot = _probe_dashboard(host, port)
     if boot is None or boot.get("pid") != pid or boot.get("boot_id") != boot_id:
         return False
+    log_path = state.get("log_path")
+    log_note = f" Log: {log_path}." if isinstance(log_path, str) else ""
     click.echo(
         f"Dashboard restart already completed on port {port} "
-        f"(PID {pid}, boot {boot_id}); reusing that healthy process."
+        f"(PID {pid}, boot {boot_id}); reusing that healthy process. "
+        f"Stop it with `kill {pid}`.{log_note}"
     )
     return True
+
+
+def _prune_restart_logs(directory: Path, port: int, keep: int = 5) -> None:
+    """Keep only the newest few detached-dashboard logs for this port."""
+    paths = list(directory.glob(f"restart-{port}-*.log"))
+    paths.sort(key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
+    for path in paths[keep:]:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            click.echo(
+                f"Warning: could not prune old dashboard restart log {path}: {exc}", err=True
+            )
+
+
+def _restart_preflight_error(board_root: Path) -> OpError | None:
+    """Resolve the recorded board in the restarting shell before stopping it."""
+    from lattice.boards import resolve_board
+
+    try:
+        resolve_board(board_root, honor_env=False)
+    except OpError as exc:
+        return exc
+    return None
 
 
 def _find_free_port(host: str, near: int) -> int | None:
@@ -467,8 +524,9 @@ def dashboard_cmd(host: str, port: int | None, output_json: bool) -> None:
             err=True,
         )
 
-    global _stop_requested
+    global _stop_requested, _stop_signal_count
     _stop_requested = False
+    _stop_signal_count = 0
     previous_hup = None
     previous_term = None
     if hasattr(signal, "SIGHUP"):
@@ -511,6 +569,8 @@ def _dashboard_target(lattice_dir, stack, is_json):  # noqa: ANN001, ANN202
 def _serve(lattice_dir, host, port, readonly, output_json, target):  # noqa: ANN001, ANN202, PLR0913
     """Serve one process image; SIGTERM stops it after a bounded write drain."""
     global _stop_requested
+
+    restarted = os.environ.pop(_RESTARTED_ENV, None) == "1"
 
     from lattice.dashboard import server as dashboard_server
 
@@ -559,15 +619,18 @@ def _serve(lattice_dir, host, port, readonly, output_json, target):  # noqa: ANN
     url = f"http://{host}:{port}/"
     if output_json:
         click.echo(json_envelope(True, data={"host": host, "port": port, "url": url}))
+    elif restarted:
+        click.echo(f"Lattice dashboard restarted: {url}")
     else:
         click.echo(f"Lattice dashboard: {url}")
         click.echo("Press Ctrl+C to stop.")
         import webbrowser
 
-        try:
-            webbrowser.open(url)
-        except Exception:
-            pass
+        if not restarted:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
 
     try:
         # Use handle_request with a short timeout so a signal received just
@@ -579,14 +642,18 @@ def _serve(lattice_dir, host, port, readonly, output_json, target):  # noqa: ANN
                 try:
                     server.handle_request()
                 except KeyboardInterrupt:
-                    _stop_requested = True
+                    _request_stop()
 
             request = _read_json(_restart_request_path(os.getpid()))
-            request_id = (
-                request.get("request_id")
-                if request is not None and request.get("pid") == os.getpid()
-                else None
-            )
+            request_id = None
+            if (
+                request is not None
+                and request.get("pid") == os.getpid()
+                and request.get("boot_id") == boot_id
+                and isinstance(request.get("request_id"), str)
+            ):
+                request_id = request["request_id"]
+            stop_count_at_drain = _stop_signal_count
             drained, pending = server.begin_write_drain(
                 timeout=dashboard_server.WRITE_DRAIN_TIMEOUT
             )
@@ -595,7 +662,7 @@ def _serve(lattice_dir, host, port, readonly, output_json, target):  # noqa: ANN
                     f"{pending} admitted write(s) did not finish before the "
                     f"{dashboard_server.WRITE_DRAIN_TIMEOUT:g}-second drain deadline"
                 )
-                if isinstance(request_id, str):
+                if isinstance(request_id, str) and _stop_signal_count == stop_count_at_drain:
                     try:
                         _atomic_json(
                             _restart_result_path(os.getpid()),
@@ -610,12 +677,23 @@ def _serve(lattice_dir, host, port, readonly, output_json, target):  # noqa: ANN
                         )
                     except OSError as exc:
                         click.echo(f"Warning: could not record restart result: {exc}", err=True)
-                click.echo(
-                    f"Dashboard restart canceled: {reason}; the old dashboard remains available.",
-                    err=True,
-                )
-                _stop_requested = False
-                continue
+                    click.echo(
+                        f"Dashboard restart canceled: {reason}; the old dashboard remains available.",
+                        err=True,
+                    )
+                    _stop_requested = False
+                    continue
+                if isinstance(request_id, str):
+                    click.echo(
+                        f"Dashboard stop forced after a second signal during the drain: {reason}.",
+                        err=True,
+                    )
+                else:
+                    click.echo(
+                        f"Dashboard is stopping after its write drain deadline: {reason}.",
+                        err=True,
+                    )
+                break
 
             if isinstance(request_id, str):
                 try:
@@ -645,7 +723,7 @@ def _serve(lattice_dir, host, port, readonly, output_json, target):  # noqa: ANN
     help="Port of the dashboard to restart. Defaults to dashboard_port in config, or 8799.",
 )
 def restart_cmd(port: int | None) -> None:
-    """Stop and start the listening dashboard with its recorded launch context."""
+    """Restart the listener as a detached dashboard with recorded launch settings."""
     if port is None:
         lattice_dir = require_root(False)
         config = load_project_config(lattice_dir)
@@ -714,6 +792,13 @@ def restart_cmd(port: int | None) -> None:
             or not isinstance(record.get("boot_id"), str)
             or not isinstance(record.get("argv"), list)
             or not all(isinstance(value, str) for value in record.get("argv", []))
+            or (
+                "lattice_env_names" in record
+                and (
+                    not isinstance(record.get("lattice_env_names"), list)
+                    or not all(isinstance(value, str) for value in record["lattice_env_names"])
+                )
+            )
         ):
             click.echo(
                 f"Error: launch metadata for dashboard PID {pid} on port {port} is invalid; "
@@ -724,8 +809,7 @@ def restart_cmd(port: int | None) -> None:
 
         host = record["host"]
         old_boot_id = record["boot_id"]
-        boot = _probe_dashboard(host, port)
-        if boot is None or boot.get("pid") != pid or boot.get("boot_id") != old_boot_id:
+        if not _wait_for_dashboard_identity(host, port, pid, old_boot_id):
             click.echo(
                 f"Error: dashboard PID {pid} on port {port} did not match its recorded boot identity; "
                 "the process was left untouched.",
@@ -733,12 +817,37 @@ def restart_cmd(port: int | None) -> None:
             )
             raise SystemExit(1)
 
+        root_override = record.get("root_override")
+        environment = os.environ.copy()
+        if isinstance(root_override, str) and root_override:
+            environment["LATTICE_ROOT"] = root_override
+        else:
+            environment.pop("LATTICE_ROOT", None)
+        recorded_env_names = record.get("lattice_env_names", [])
+        missing_env_names = sorted(name for name in recorded_env_names if name not in environment)
+        if missing_env_names:
+            click.echo(
+                "Warning: the restarting shell is missing LATTICE_* variable(s) present when "
+                f"this dashboard started: {', '.join(missing_env_names)}. The replacement uses "
+                "the restarting shell's environment.",
+                err=True,
+            )
+
         cwd = Path(record.get("cwd", ""))
         board_root = Path(record.get("board_root", ""))
         if not cwd.is_dir() or not board_root.is_dir() or not (board_root / ".lattice").is_dir():
             click.echo(
                 f"Error: the recorded dashboard launch directory or board root no longer exists; "
                 f"dashboard PID {pid} was left untouched. Check {launch_path}.",
+                err=True,
+            )
+            raise SystemExit(1)
+
+        preflight_error = _restart_preflight_error(board_root)
+        if preflight_error is not None:
+            click.echo(
+                f"Error: dashboard restart preflight failed ({preflight_error.code}): "
+                f"{preflight_error.message} Dashboard PID {pid} remains available on port {port}.",
                 err=True,
             )
             raise SystemExit(1)
@@ -826,18 +935,14 @@ def restart_cmd(port: int | None) -> None:
             raise SystemExit(1)
         _remove_launch_record(pid, old_boot_id)
 
-        root_override = record.get("root_override")
-        environment = os.environ.copy()
-        if isinstance(root_override, str) and root_override:
-            environment["LATTICE_ROOT"] = root_override
-        else:
-            environment.pop("LATTICE_ROOT", None)
-
         log_path = directory / f"restart-{port}-{request_id[:10]}.log"
+        environment[_RESTARTED_ENV] = "1"
         try:
             log_path.touch(mode=0o600, exist_ok=False)
             os.chmod(log_path, 0o600)
+            _prune_restart_logs(directory, port)
             with log_path.open("ab") as log_stream:
+                spawned_ns = time.time_ns()
                 process = subprocess.Popen(
                     record["argv"],
                     cwd=cwd,
@@ -886,12 +991,14 @@ def restart_cmd(port: int | None) -> None:
                                 _restart_state_path(port),
                                 {
                                     "status": "complete",
+                                    "spawned_ns": spawned_ns,
                                     "completed_ns": completed_ns,
                                     "old_pid": pid,
                                     "old_boot_id": old_boot_id,
                                     "new_pid": process.pid,
                                     "new_boot_id": new_boot["boot_id"],
                                     "host": host,
+                                    "log_path": str(log_path),
                                 },
                             )
                         except OSError as exc:
@@ -907,7 +1014,8 @@ def restart_cmd(port: int | None) -> None:
                                 pass
                         click.echo(
                             f"Dashboard restarted with current Python code on port {port} "
-                            f"(PID {pid} → {process.pid}; boot {new_boot['boot_id']})."
+                            f"(PID {pid} → {process.pid}; boot {new_boot['boot_id']}). "
+                            f"Stop it with `kill {process.pid}`. Log: {log_path}."
                         )
                         return
                     start_reason = "new listener did not write valid launch metadata"
