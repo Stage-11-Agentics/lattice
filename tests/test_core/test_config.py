@@ -147,10 +147,11 @@ class TestGitBranchNameValidation:
         opinionated = default_config("opinionated")
         assert classic["workflow"]["descriptions"] == opinionated["workflow"]["descriptions"]
 
-    def test_auto_review_keys_default_true(self) -> None:
+    def test_auto_review_keys_default_false(self) -> None:
+        """New boards leave review triggering to whoever orchestrates (LAT-420)."""
         config = default_config()
-        assert config["auto_code_review_on_transition"] is True
-        assert config["auto_plan_review_on_transition"] is True
+        assert config["auto_code_review_on_transition"] is False
+        assert config["auto_plan_review_on_transition"] is False
 
 
 class TestSerializeConfig:

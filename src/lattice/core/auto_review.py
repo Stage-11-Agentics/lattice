@@ -31,8 +31,12 @@ _STATUS_TO_REVIEW_TYPE: dict[str, str] = {
     "planned": "plan-review",
 }
 
-#: Per-gate config key that enables/disables auto-fire.  Both default to
-#: ``True``; readers always pass ``True`` as the default to ``dict.get``.
+#: Per-gate config key that enables/disables auto-fire.  New boards write
+#: both as ``False`` (:func:`lattice.core.config.default_config`): reviews are
+#: triggered by whoever orchestrates the work.  A board whose config lacks a
+#: key predates that and keeps auto-firing, so readers pass ``True`` as the
+#: ``dict.get`` default; ``lattice doctor`` recommends setting it
+#: (:func:`inherited_auto_review_keys`).
 _STATUS_TO_CONFIG_KEY: dict[str, str] = {
     "review": "auto_code_review_on_transition",
     "planned": "auto_plan_review_on_transition",
@@ -136,6 +140,20 @@ def should_auto_fire(
         return False, "inline_mode"
 
     return True, None
+
+
+def inherited_auto_review_keys(config: dict) -> list[str]:
+    """The auto-review keys a board leaves unset while their gate still fires.
+
+    Such a board inherited auto-review from before new boards started with it
+    off; it keeps firing until the key is set. A gate whose mode is ``inline``
+    spawns nothing, so its unset key is not listed. Pure function.
+    """
+    return [
+        key
+        for status, key in _STATUS_TO_CONFIG_KEY.items()
+        if key not in config and resolve_mode(config, status) != "inline"
+    ]
 
 
 # ---------------------------------------------------------------------------

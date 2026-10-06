@@ -698,7 +698,7 @@ def init(
                     click.echo("")
                     try:
                         inc_review = click.confirm(
-                            "code review stage? (review — auto-fired review agents examine the diff)",
+                            "code review stage? (review — a fresh-context reviewer examines the diff)",
                             default=True,
                         )
                         inc_validation = click.confirm(

@@ -286,6 +286,33 @@ class TestAutoFireSkipPaths:
         popen.assert_not_called()
         assert "auto-review skipped (disabled in config)" in res.output
 
+    def test_new_board_default_does_not_spawn(self, tmp_path: Path) -> None:
+        """A board on the shipped config leaves reviews to the orchestrator (LAT-420)."""
+        ensure_lattice_dirs(tmp_path)
+        lattice_dir = tmp_path / LATTICE_DIR
+        atomic_write(lattice_dir / "config.json", serialize_config(default_config()))
+        (lattice_dir / "events" / "_lifecycle.jsonl").touch()
+        runner = CliRunner()
+        task_id = _create_task(runner, tmp_path)
+        _walk_to_in_progress(runner, tmp_path, task_id)
+
+        with (
+            patch.object(cli_auto_review.subprocess, "Popen") as popen,
+            _patch_executable(),
+            patch.object(
+                cli_auto_review, "_normalize_reviewed_worktree", return_value=Path.cwd().resolve()
+            ),
+        ):
+            res = runner.invoke(
+                cli,
+                ["status", task_id, "review", "--actor", "agent:test"],
+                env={"LATTICE_ROOT": str(tmp_path)},
+                catch_exceptions=False,
+            )
+        assert res.exit_code == 0
+        popen.assert_not_called()
+        assert "auto-review skipped (disabled in config)" in res.output
+
     def test_inline_review_mode_skips_spawn(self, tmp_path: Path) -> None:
         root = _make_board(tmp_path, review_mode="inline")
         runner = CliRunner()

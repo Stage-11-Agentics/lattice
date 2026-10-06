@@ -41,12 +41,13 @@ If there's no existing task, create one:
 lattice create "Fix the login bug" --actor agent:claude-cli --priority high
 ```
 
-### One Review Owner Per Gate Cycle
+### Who Triggers Reviews
 
-Use the reviewer auto-fired by the `→ planned`/`→ review` transition or one manually spawned fresh-context reviewer, never both. For a manual owner, put `--no-auto-review` on that status transition before spawning the reviewer:
+Reviews are triggered by whoever orchestrates the work: you, or the orchestrator that dispatched you. Run `lattice plan-review <task>` / `lattice code-review <task>`, or spawn your own fresh-context reviewer and record its verdict (`lattice attach <task> --role review`, or `lattice complete --review`). Lattice records verdicts and evidence and shows them. It does not decide when a review happens.
+
+**Auto-review is an opt-in for unorchestrated use**, where a Lattice-fired reviewer is the only review: a board sets `auto_code_review_on_transition` / `auto_plan_review_on_transition` to `true`, and moving to `review` / `planned` spawns the review in the background. New boards start with both off. A board that leaves them unset predates that default and still auto-fires; `lattice doctor` notes it. Use one review owner per gate cycle, never both: on an auto-review board, put `--no-auto-review` on the transition before spawning your own reviewer.
 
 ```bash
-lattice status <task> planned --no-auto-review --actor agent:<id>
 lattice status <task> review --no-auto-review --actor agent:<id>
 ```
 
@@ -214,7 +215,7 @@ A checkout with a committed `.lattice-remote.json` is bound to a Lattice server 
 
 - Every command works the same, with the same output and error codes. Writes go to the server; reading `.lattice/` files still works. A linked worktree has only `.lattice-remote.json`; the read-only mirror is the primary checkout's `.lattice/`.
 - `lattice remote status` shows the token's person; you still pass `--actor agent:<your-id>`. Every event records both your actor and the token's user and machine (`lattice show <task> --full`).
-- Whether a status change fires an automatic review depends on the board's config; the `lattice status` output says what happened. `plan-review` and `code-review` run by hand need `--actor`.
+- Whether a status change fires an automatic review depends on the board's config (off unless the project opted in); the `lattice status` output says what happened. `plan-review` and `code-review` run by hand need `--actor`.
 - Work not merged through a PR goes `review -> done` with `lattice complete`; say in the review how it was integrated (commit SHA and branch).
 - **Never edit files under `.lattice/`.** Write plans and notes with `lattice plan write` / `lattice notes write`, the board's context with `lattice context write`, and orchestration files with `lattice board write orchestration/<path>`.
 - **`OUTCOME_UNKNOWN`** means the server may have applied the write. Run `lattice remote op-status <op_id>` (the message names it) before retrying: `committed` means do not run it again. If op-status itself fails with `SERVER_UNREACHABLE`, the outcome is still unknown: retry the lookup later, never the write.

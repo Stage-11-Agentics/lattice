@@ -332,19 +332,16 @@ lattice artifact show <artifact_id> --json           # Structured result
 
 JSON success returns `data.artifact` (metadata), `data.content` (UTF-8 text or `null`), and `data.payload_path` (a POSIX path relative to `.lattice`, such as `artifacts/payload/<artifact_id>.md`, or `null`). Reference artifacts with no stored payload have null content and path. Binary payloads have null content and a path; human output reports their content type, size, and path. Missing, unreadable, unsafe-path, or invalid-UTF-8 text payloads return `PAYLOAD_UNAVAILABLE`. A sensitive artifact uses a neutral message that the payload may not have been copied to this checkout.
 
-### Auto-fire on status transitions
+### Auto-fire on status transitions (opt-in)
 
-Transitioning a task to `review` or `planned` automatically spawns the matching review subprocess in the background:
+Reviews are triggered by whoever orchestrates the work; Lattice records verdicts and evidence. Auto-review is an opt-in for unorchestrated use: on a board that enables it, transitioning a task to `review` or `planned` spawns the matching review subprocess in the background:
 
 | Transition | What fires | Default mode |
 |------------|------------|--------------|
 | `→ review` | `lattice code-review <task>` (detached) | `review_mode` (default `single`) |
 | `→ planned` | `lattice plan-review <task>` (detached) | `plan_review_mode` (default `triple`) |
 
-Both default to enabled. Disable via:
-
-- `--no-auto-review` on `lattice status` (per-call opt-out).
-- `auto_code_review_on_transition: false` and/or `auto_plan_review_on_transition: false` in `.lattice/config.json` (project-wide).
+Enable with `auto_code_review_on_transition: true` and/or `auto_plan_review_on_transition: true` in `.lattice/config.json`. New boards write both as `false`. A board whose config leaves a key unset predates that default and still auto-fires; `lattice doctor` reports it as an `auto_review_default` info finding. Skip one auto-fire with `--no-auto-review` on `lattice status`.
 
 Coordination piggybacks on the existing `review_state/<task_id>.json` primitive — first-writer-wins. If a review is already in flight from a manual `lattice code-review` (or another auto-fire on a different machine), the second auto-fire is a no-op and reports `auto-review skipped (review already in flight, pid …)`.
 
@@ -352,7 +349,7 @@ Logs land at `.lattice/.daemon/auto-{code,plan}-review-<task_id>.log` (overwritt
 
 Spawn failures (no `lattice` on PATH, OS forbids fork) never block the status transition — the change still lands and a warning is logged. Auto-fire is enhancement, never gating.
 
-**Cost-of-ownership.** With `triple` mode (the default for `plan_review_mode`), every transition into `planned` or `review` spends three agent runs plus a merge run. For projects where API spend matters, set the config keys to `false` or use `--no-auto-review` for surgical transitions.
+**Cost-of-ownership.** With `triple` mode (the default for `plan_review_mode`), every transition into `planned` or `review` spends three agent runs plus a merge run. Use `--no-auto-review` for surgical transitions on an auto-review board.
 
 ### The taste-to-code pipeline
 

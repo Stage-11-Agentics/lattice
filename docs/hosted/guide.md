@@ -312,7 +312,7 @@ lattice server project list
 
 The slug is lowercase letters, digits, and dashes, starting with a letter or digit, at most 63 characters. `--code` sets the short-ID prefix (`WEB-1`); a project without one can get one later from any bound checkout with `lattice set-project-code`.
 
-**Review workflow.** Each project keeps its own: plan reviews only, code reviews only, both, or none. Set it at creation (`--review-mode`, `--plan-review-mode`, `--plan-approval`, `--auto-code-review/--no-auto-code-review`, `--auto-plan-review/--no-auto-plan-review`) or change it later:
+**Review workflow.** Each project keeps its own: plan reviews only, code reviews only, both, or none. Automatic reviews start off (the orchestrator triggers reviews); turn them on for unorchestrated use. Set it at creation (`--review-mode`, `--plan-review-mode`, `--plan-approval`, `--auto-code-review/--no-auto-code-review`, `--auto-plan-review/--no-auto-plan-review`) or change it later:
 
 ```bash
 lattice server project config web --set auto_plan_review_on_transition=false
@@ -761,7 +761,7 @@ Everything you and your agents do locally works the same: `create`, `status`, `c
 
 ## 13. Auto-review on hosted boards
 
-Automatic reviews work as locally, from the project's review workflow (section 7), with three differences:
+Automatic reviews are an opt-in for unorchestrated use; new projects start with them off, because whoever orchestrates the work triggers reviews. On a project that turns them on, they work as locally, from the project's review workflow (section 7), with these differences:
 
 - **The review runs on the machine that made the transition.** When you move a task to `review` or `planned`, your client starts the review agent in your worktree and records it on the board. A thin client must stay alive until its review lands; a box torn down mid-review leaves no review.
 - **Whether a transition fires a review depends on the project's config** (section 7). The `lattice status` output says whether it fired, and why not.

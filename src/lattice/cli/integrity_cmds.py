@@ -351,7 +351,7 @@ def _doctor_report(
                     click.echo(f"\u26a0 {f['message']}")
 
         for f in findings:
-            if f["check"] == "history_repair":
+            if f["check"] in ("history_repair", "auto_review_default"):
                 click.echo(f"\u2139 {f['message']}")
 
         for f in findings:

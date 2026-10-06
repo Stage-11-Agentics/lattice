@@ -110,6 +110,13 @@ def test_project_create_writes_the_config_init_writes(
         assert (served / name).read_bytes() == (local / ".lattice" / name).read_bytes()
 
 
+def test_new_projects_start_with_auto_review_off(root: Path) -> None:
+    admin.create_project(root, "p")
+    config = json.loads((root / "projects" / "p" / ".lattice" / "config.json").read_text())
+    assert config["auto_code_review_on_transition"] is False
+    assert config["auto_plan_review_on_transition"] is False
+
+
 def test_review_toggles(root: Path) -> None:
     admin.create_project(root, "p", auto_code_review=False, auto_plan_review=True)
     config = json.loads((root / "projects" / "p" / ".lattice" / "config.json").read_text())
