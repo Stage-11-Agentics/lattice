@@ -30,6 +30,7 @@ def test_the_list() -> None:
         "doctor --fix",
         "backfill-ids",
         "migrate needs-human",
+        "migrate validation-done",
     )
 
 
@@ -81,6 +82,7 @@ HOSTED_COMMANDS = [
     ("doctor --fix", ["doctor", "--fix"]),
     ("backfill-ids", ["backfill-ids"]),
     ("migrate needs-human", ["migrate", "needs-human"]),
+    ("migrate validation-done", ["migrate", "validation-done"]),
 ]
 
 

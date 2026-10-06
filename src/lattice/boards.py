@@ -455,6 +455,7 @@ LOCAL_ONLY_COMMANDS: tuple[str, ...] = (
     "doctor --fix",
     "backfill-ids",
     "migrate needs-human",
+    "migrate validation-done",
 )
 """Commands that operate directly on a data directory, refused on a hosted checkout."""
 

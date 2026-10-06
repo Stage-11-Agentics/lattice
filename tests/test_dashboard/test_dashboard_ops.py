@@ -151,6 +151,39 @@ class TestRules:
         assert body["error"]["code"] in {"INVALID_TRANSITION", "COMPLETION_BLOCKED"}
         assert "--force --reason" in body["error"]["message"]
 
+    def test_validation_to_done_needs_completion_evidence(self, dash):
+        """Merge-first close (in_validation -> done) runs the done policy here too."""
+        port, ld, ids = dash
+        task = ids["in_progress"]
+        for step in ("review", "in_validation"):
+            assert post(port, f"/api/tasks/{task}/status", {"status": step})[0] == 200
+        before = board_bytes(ld)
+
+        status, body = post(port, f"/api/tasks/{task}/status", {"status": "done"})
+
+        assert (status, body["error"]["code"]) == (422, "COMPLETION_BLOCKED")
+        assert board_bytes(ld) == before
+
+        board = LocalBoard(root=ld.parent, start=ld.parent)
+        board.execute(
+            "task.comment",
+            {"task": task, "text": "Review PASS; merged.", "role": "review"},
+            Caller(actor="agent:reviewer"),
+        )
+        status, body = post(port, f"/api/tasks/{task}/status", {"status": "done"})
+        assert status == 200, body
+        assert body["data"]["status"] == "done"
+        assert events_of(ld, task)[-1]["data"] == {"from": "in_validation", "to": "done"}
+
+    def test_rework_records_its_review_cycle(self, dash):
+        port, ld, ids = dash
+        task = ids["in_progress"]
+        (ld / "plans" / f"{task}.md").write_text("# Plan\n\nOne real line.\n")
+        assert post(port, f"/api/tasks/{task}/status", {"status": "review"})[0] == 200
+        assert post(port, f"/api/tasks/{task}/status", {"status": "in_progress"})[0] == 200
+        cycle = events_of(ld, task)[-1]["data"]["review_cycle"]
+        assert cycle == {"cycle": 1, "limit": 3, "over_limit": False, "enforced": False}
+
     def test_non_status_refusal_has_no_escape(self, dash):
         port, _ld, ids = dash
         status, body = post(port, f"/api/tasks/{ids['backlog']}/comment", {"body": "  "})

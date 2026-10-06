@@ -107,6 +107,7 @@
             ],
             "in_validation": [
               "pr_open",
+              "done",
               "in_progress",
               "in_planning",
               "blocked",
@@ -237,6 +238,12 @@
           "actor": "human:parity",
           "data": {
             "from": "review",
+            "review_cycle": {
+              "cycle": 1,
+              "enforced": false,
+              "limit": 1,
+              "over_limit": false
+            },
             "to": "in_progress"
           },
           "id": "<ID-7>",
@@ -260,15 +267,16 @@
         {
           "actor": "human:parity",
           "data": {
-            "force": true,
             "from": "review",
-            "reason": "exceptional",
+            "review_cycle": {
+              "cycle": 2,
+              "enforced": false,
+              "limit": 1,
+              "over_limit": true
+            },
             "to": "in_progress"
           },
           "id": "<ID-9>",
-          "provenance": {
-            "reason": "exceptional"
-          },
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -629,14 +637,17 @@
         "--actor",
         "human:parity"
       ],
-      "exit_code": 1,
+      "exit_code": 0,
       "stderr": {
         "lines": [
-          "Error: Review cycle limit reached (1/1). This task has been sent back from review 1 time(s). Flag it for a human instead of cycling further: lattice needs-human <task> \"<what you need>\". Override with --force --reason."
+          "Warning: review cycle 2 passes the limit of 1. Recorded, not enforced: Lattice did not fire this review, so whoever runs the reviews owns the budget."
         ]
       },
       "stdout": {
-        "lines": []
+        "lines": [
+          "Status: review -> in_progress (PAR-1)",
+          "  Next: implement the plan, then move to review."
+        ]
       }
     },
     {
@@ -650,7 +661,7 @@
       "exit_code": 1,
       "stderr": {
         "lines": [
-          "Error: Review cycle limit reached (1/1). This task has been sent back from review 1 time(s). Flag it for a human instead of cycling further: lattice needs-human <task> \"<what you need>\". Override with --force --reason."
+          "Error: Invalid transition from in_progress to in_planning. Valid transitions from in_progress: review, blocked, cancelled. Use --force --reason to override."
         ]
       },
       "stdout": {
@@ -674,8 +685,7 @@
       },
       "stdout": {
         "lines": [
-          "Status: review -> in_progress (PAR-1)",
-          "  Next: implement the plan, then move to review."
+          "Already at status in_progress"
         ]
       }
     },
@@ -734,7 +744,7 @@
       "stdout": {
         "lines": [
           "Status: review -> in_validation (PAR-1)",
-          "  Next: validate end-to-end against a running system — browser automation for web, simulator MCP for mobile, curl for APIs. Exercise the actual flow this task touched, then record evidence: lattice attach PAR-1 --role validation (or lattice comment PAR-1 --role validation). On pass move to pr_open; on fail route back to in_progress (impl-level) or in_planning (plan-level). The bar: 'I saw it work,' not 'I think it should work.'"
+          "  Next: validate end-to-end against a running system — browser automation for web, simulator MCP for mobile, curl for APIs. Exercise the actual flow this task touched, then record evidence: lattice attach PAR-1 --role validation (or lattice comment PAR-1 --role validation). On pass move to pr_open, or straight to done when the PR already merged; on fail route back to in_progress (impl-level) or in_planning (plan-level). The bar: 'I saw it work,' not 'I think it should work.'"
         ]
       }
     },

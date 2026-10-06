@@ -1,6 +1,7 @@
 """``task.status``: the ``lattice status`` command's rules.
 
-The transition graph, ``--force`` with ``--reason``, the review-cycle limit,
+The transition graph, ``--force`` with ``--reason``, the review-cycle record
+and limit,
 completion policies, the plan gate, auto-assignment on entering active work,
 and the plan-reset heading on a backward move. The c11 bridge and auto-review
 spawning are client-side effects the caller runs after this returns.
@@ -18,7 +19,7 @@ from lattice.core.config import (
     validate_status,
     validate_transition,
 )
-from lattice.core.events import count_review_rework_cycles
+from lattice.core.events import count_review_rework_cycles, latest_review_auto_fired
 from lattice.core.tasks import is_backward_status_transition
 from lattice.ops.attestation_check import attested_review_commits
 from lattice.ops.base import CommonParams, OpContext, OpError, OpResult, operation
@@ -102,19 +103,33 @@ class Status:
                     )
                 if not p.reason:
                     raise OpError("VALIDATION_ERROR", "--reason is required with --force.")
-            if current in REWORK_SOURCES and new_status in REWORK_TARGETS and not p.force:
-                cycles = count_review_rework_cycles(list(context.events))
+            # Rework from a gate is recorded as a numbered review cycle. The
+            # limit is a hard stop only when Lattice auto-fired the review
+            # being reworked; any other review loop is bounded by whoever
+            # drives it, so passing the limit there is recorded, not refused.
+            review_cycle: dict | None = None
+            if current in REWORK_SOURCES and new_status in REWORK_TARGETS:
+                task_events = list(context.events)
+                cycles = count_review_rework_cycles(task_events)
                 limit = get_review_cycle_limit(config)
-                if cycles >= limit:
+                enforced = latest_review_auto_fired(task_events)
+                if cycles >= limit and enforced and not p.force:
                     raise OpError.task_state(
                         "REVIEW_CYCLE_LIMIT",
                         f"Review cycle limit reached ({cycles}/{limit}). "
-                        f"This task has been sent back from review {cycles} time(s). "
+                        f"This task has been sent back from review {cycles} time(s), "
+                        "and Lattice auto-fired the review being reworked. "
                         "Flag it for a human instead of cycling further: "
                         'lattice needs-human <task> "<what you need>". '
                         "Override with --force --reason.",
                         snapshot,
                     )
+                review_cycle = {
+                    "cycle": cycles + 1,
+                    "limit": limit,
+                    "over_limit": cycles >= limit,
+                    "enforced": enforced,
+                }
             # The reachable-review-commit policy judges the caller's
             # attestation, checked against the board as it is now (SPEC §3.4).
             policy = config.get("workflow", {}).get("completion_policies", {}).get(new_status, {})
@@ -163,6 +178,8 @@ class Status:
                 data["reason"] = p.reason
             if attested is not None:
                 data["attestations"] = {"reachable_review_commits": attested}
+            if review_cycle is not None:
+                data["review_cycle"] = review_cycle
             events.append(ctx.event("status_changed", task_id, data, p))
             return TaskMutationDecision(events=events, value=backward)
 

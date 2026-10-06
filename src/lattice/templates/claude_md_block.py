@@ -411,8 +411,12 @@ Every finding must be explicitly routed. No finding may be silently dropped.
         path_lines.append(
             "1 plan rework: in_progress -> review -> in_planning -> planned -> in_progress -> review -> ..."
         )
+        if has_validation and has_pr_open:
+            path_lines.append(
+                "Merge-first:   in_progress -> review -> (PR merged) -> in_validation -> done"
+            )
         path_lines.append(
-            "Max cycles:    3 rework transitions, then CLI blocks -> flag needs-human"
+            "Max cycles:    3 reworks of an auto-fired review, then CLI blocks -> flag needs-human"
         )
         paths_block = "\n".join(path_lines)
 
@@ -436,7 +440,7 @@ When a review agent evaluates work, it produces one of three outcomes:
 | Route to in_progress vs in_planning | Orchestrator | Follows review agent's recommendation |
 | Whether to spawn fresh sub-agent | Orchestrator | Encouraged by convention, not enforced |
 
-**3-cycle safety valve:** After 3 rework transitions (any combination of {rework_origins} -> `in_progress` or `in_planning`), the CLI blocks the 4th attempt. The error message instructs the agent to set the `needs_human` flag with a reason explaining the situation. The limit is configurable via `review_cycle_limit` in the workflow config (default: 3). Override with `--force --reason` for genuinely exceptional cases.
+**Review-cycle limit:** Every rework transition (any of {rework_origins} -> `in_progress` or `in_planning`) records its cycle number on the status event. Past the limit (`review_cycle_limit` in the workflow config, default: 3), Lattice refuses the transition (from the CLI, MCP, the dashboard or a hosted server) only when Lattice auto-fired the review being reworked — nothing else bounds that loop — and the error tells the agent to set the `needs_human` flag instead. When an orchestrator or agent runs its own reviews, passing the limit is recorded (and the CLI warns), and the transition goes through; the orchestrator owns that budget. Override a refusal with `--force --reason` for genuinely exceptional cases.
 
 **Allowed lifecycle paths:**
 
@@ -447,7 +451,11 @@ When a review agent evaluates work, it produces one of three outcomes:
 
     # ── Validation Gate (in_validation status only) ─────────────────────
     if has_validation:
-        pass_route = "pass → `pr_open` (open the PR now)" if has_pr_open else "pass → `done`"
+        pass_route = (
+            "pass → `pr_open` (open the PR now), or `done` when the PR already merged"
+            if has_pr_open
+            else "pass → `done`"
+        )
         rework_ref = ", same routing as review rework" if has_review else ""
         if pr_open_gated:
             enforcement = (
@@ -468,7 +476,7 @@ The validating agent:
 1. **Runs the change against a real running system** — browser automation for web, iOS Simulator MCP / Mobile MCP for mobile, curl flows for APIs, the CLI itself for CLI tools.
 2. **Exercises the actual flow the ticket touched** — clicks the buttons, fills the forms, follows the redirects.
 3. **Records evidence:** `lattice attach <task> --role validation` (or `lattice comment <task> --role validation`) — what was run, what was observed, pass/fail.
-4. **Routes the outcome:** {pass_route}. Fail → `in_progress` (implementation-level) or `in_planning` (plan-level){rework_ref}; the 3-cycle safety valve applies.
+4. **Routes the outcome:** {pass_route}. Fail → `in_progress` (implementation-level) or `in_planning` (plan-level){rework_ref}; each counts as a review cycle.
 
 {enforcement} If e2e validation genuinely doesn't apply (docs-only change, pure refactor with no observable behavior), record a one-line N/A justification as the validation evidence — the decision must be explicit, never silent. Do not `--force` past the policy.
 """)

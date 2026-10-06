@@ -658,6 +658,10 @@ BOARD_MAINTENANCE = {
         ["migrate", "needs-human", "--dry-run", "--json"],
         "migrate needs-human",
     ),
+    "migrate validation-done --dry-run": (
+        ["migrate", "validation-done", "--dry-run", "--json"],
+        "migrate validation-done",
+    ),
 }
 
 

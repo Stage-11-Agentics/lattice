@@ -8,7 +8,9 @@ command of ``docs/hosted/SPEC.md`` §3.3 except the review runs of ``code-review
 through ``tests/fixtures/fake_agent.py``), every rejection code of SPEC §3.1 the
 CLI emits today (``REQUIRED_CODES``),
 ``status --force --reason``, ``--name`` session actors, the dashboard settings
-POST, and board hooks (the sentinel scenario).
+POST, and board hooks (the sentinel scenario). An ``Op`` step runs one operation
+directly, to record what a command writes as a side effect without running it
+(an auto-fired review's audit event).
 
 Step arguments may carry placeholders, resolved from the board just before the
 step runs so the same step works in both modes:
@@ -72,7 +74,19 @@ class DashboardPost:
     body: Any
 
 
-Step = Cli | WriteFile | DeleteFile | Git | DashboardPost
+@dataclass(frozen=True)
+class Op:
+    """One operation run on the board as *actor*, recording state a command
+    writes as a side effect without running the side effect (an auto-fired
+    review's ``auto_review_spawned`` event, without spawning the review).
+    String values of *params* may carry placeholders."""
+
+    name: str
+    params: dict[str, Any]
+    actor: str
+
+
+Step = Cli | WriteFile | DeleteFile | Git | DashboardPost | Op
 
 
 @dataclass(frozen=True)
@@ -234,6 +248,43 @@ REVIEW_CYCLES = Scenario(
         c("comment", "PAR-1", "Saw it work.", "--role", "validation", *H),
         c("status", "PAR-1", "pr_open", *H),
         c("status", "PAR-1", "done", *H),
+    ),
+)
+
+
+def auto_review(short: str, review_entry: int) -> Op:
+    """Record that Lattice auto-fired the code review for the task's
+    *review_entry*-th status change (the entry into review)."""
+    return Op(
+        "task.record_auto_review",
+        {
+            "task": short,
+            "review_type": "code-review",
+            "mode": "single",
+            "log_path": ".lattice/.daemon/auto-code-review.log",
+            "spawned_at": "2026-01-01T00:00:00Z",
+            "pid": 1,
+            "trigger_status_event_id": f"<<event:{short}:status_changed:{review_entry}>>",
+        },
+        "agent:lattice-auto-review",
+    )
+
+
+REVIEW_CYCLE_AUTO = Scenario(
+    name="review_cycle_auto",
+    description="the review-cycle limit refuses rework only of a review Lattice auto-fired",
+    config={"workflow": {"review_cycle_limit": 1}},
+    steps=(
+        c("create", "Auto-reviewed task", *H),
+        c("status", "PAR-1", "in_progress", "--force", "--reason", "straight to work", *H),
+        c("status", "PAR-1", "review", "--no-auto-review", *H),
+        auto_review("PAR-1", 1),
+        plan("PAR-1"),
+        c("status", "PAR-1", "in_progress", *H),
+        c("status", "PAR-1", "review", "--no-auto-review", *H),
+        auto_review("PAR-1", 3),
+        c("status", "PAR-1", "in_progress", *H),
+        c("status", "PAR-1", "in_progress", "--force", "--reason", "exceptional", *H),
     ),
 )
 
@@ -1002,6 +1053,7 @@ ISSUES = Scenario(
 SCENARIOS: tuple[Scenario, ...] = (
     LIFECYCLE,
     REVIEW_CYCLES,
+    REVIEW_CYCLE_AUTO,
     PLAN_INTEGRITY,
     PLAN_READ,
     PROSE_WRITES,

@@ -52,7 +52,7 @@ lattice status <task> review --no-auto-review --actor agent:<id>
 
 ### Closing Ritual
 
-**`lattice complete` is THE way to finish work.** It performs the full completion ceremony in one command: posts a review comment, attaches a review artifact, transitions through review to done.
+**`lattice complete` is THE way to finish work.** It performs the full completion ceremony in one command: posts a review comment, attaches a review artifact, transitions through review to done. From `in_validation` it goes straight to done, since review is already behind it.
 
 ```bash
 lattice complete <task_id> --review "What was done. Key decisions. Test results. What remains." --actor agent:claude-cli
@@ -175,7 +175,11 @@ Transitions are enforced. Use `--force --reason "..."` to override when genuinel
 
 **`needs-human` is a flag, not a status.** It rides orthogonally on top of whatever status a task is in — a task can be `in_progress` and flagged, `blocked` and flagged, even `done` and flagged. Set it with `lattice needs-human <task> "<reason>"` (reason required) and clear it with `lattice needs-human <task> --clear`. The flag never moves the task. `blocked` stays a status for generic external dependencies; `needs-human` means "waiting on a human specifically," and the two can coexist.
 
-**`in_validation` is the e2e gate.** After local review passes, prove the change works against a running system — browser automation for web, simulator MCP for mobile, curl flows for APIs. Exercise the actual flow the ticket touched, then record evidence with `lattice attach <task> --role validation` (or `lattice comment <task> --role validation`). Transitioning to `pr_open` is blocked until validation evidence is recorded; if e2e genuinely doesn't apply, record a one-line N/A justification instead — explicit, never silent. Validation failure routes back to `in_progress` (impl-level) or `in_planning` (plan-level), and counts toward the 3-cycle rework valve. The bar: **"I saw it work," not "I think it should work."**
+**`in_validation` is the e2e gate.** After local review passes, prove the change works against a running system — browser automation for web, simulator MCP for mobile, curl flows for APIs. Exercise the actual flow the ticket touched, then record evidence with `lattice attach <task> --role validation` (or `lattice comment <task> --role validation`). Transitioning to `pr_open` is blocked until validation evidence is recorded; if e2e genuinely doesn't apply, record a one-line N/A justification instead — explicit, never silent. Validation failure routes back to `in_progress` (impl-level) or `in_planning` (plan-level), and counts as a review cycle. The bar: **"I saw it work," not "I think it should work."**
+
+**Merge-first flows close from `in_validation`.** When an orchestrator merges the PR before validating, the task goes `review → in_validation → done` with no `pr_open` detour. `done` still requires its completion evidence (a `review`-role comment or artifact by default).
+
+**Review cycles are recorded; the limit binds Lattice's own loop.** Every rework transition (`review`, `in_validation` or `pr_open` back to `in_progress` or `in_planning`) records its cycle number on the status event (`review_cycle`). Past `review_cycle_limit` (default 3), the transition is refused only when Lattice auto-fired the review being reworked, because nothing else bounds that loop: flag the task `needs-human` instead of cycling. When an orchestrator or agent runs the reviews, passing the limit is recorded and warned, and the transition goes through.
 
 `--criterion` on a comment or artifact records a traceability link only. It does not prove that criterion passed or was satisfied; state the observed result in the evidence itself and follow the configured role-based validation policy.
 

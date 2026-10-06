@@ -6,6 +6,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from lattice.storage.fs import LATTICE_DIR
 
 from tests.conftest import _add_policies_to_config
@@ -383,8 +385,40 @@ class TestCompletionPolicyGating:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def lattice_fires_reviews(monkeypatch, tmp_path):
+    """Make every transition into review look auto-fired by Lattice.
+
+    The conftest board disables auto-fire; this stands in a successful spawn so
+    ``lattice status`` records the ``auto_review_spawned`` event without
+    launching a review process.
+    """
+    from lattice.cli import auto_review, task_cmds
+
+    def fake_auto_fire(lattice_dir, task_id, new_status, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        if new_status != "review" or kwargs.get("no_auto_review_flag"):
+            return {"fired": False, "reason": "test"}
+        return {
+            "fired": True,
+            "review_type": "code-review",
+            "mode": "single",
+            "log_path": "auto-code-review.log",
+            "spawned_at": "2026-01-01T00:00:00Z",
+            "pid": 1,
+        }
+
+    monkeypatch.setattr(auto_review, "auto_fire_review", fake_auto_fire)
+    monkeypatch.setattr(task_cmds, "_caller_git_worktree", lambda: tmp_path)
+
+
+def _status_events(root: Path, task_id: str) -> list[dict]:
+    path = root / LATTICE_DIR / "events" / f"{task_id}.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return [e for e in events if e["type"] == "status_changed"]
+
+
 class TestReviewCycleLimitGating:
-    """Review rework transitions blocked after cycle limit is reached."""
+    """Review rework cycles are recorded; the limit hard-stops only Lattice's own review loop."""
 
     def _create_and_advance_to_review(self, invoke, fill_plan) -> str:
         """Create a task and advance it to review status. Returns task_id."""
@@ -441,13 +475,56 @@ class TestReviewCycleLimitGating:
         assert r.exit_code == 0
         assert json.loads(r.output)["ok"] is True
 
-    def test_cycle_limit_blocks_after_3_reworks(
+    def test_every_rework_records_its_cycle(
         self,
         invoke,
         initialized_root,
         fill_plan,
     ) -> None:
-        """After 3 review->rework transitions, the 4th is blocked."""
+        """Each rework transition carries its cycle number on the status event."""
+        task_id = self._create_and_advance_to_review(invoke, fill_plan)
+        self._rework_cycle_impl(invoke, fill_plan, task_id)
+        self._rework_cycle_impl(invoke, fill_plan, task_id)
+
+        reworks = [
+            e["data"]
+            for e in _status_events(initialized_root, task_id)
+            if e["data"]["to"] == "in_progress"
+        ][1:]
+        assert [d["review_cycle"]["cycle"] for d in reworks] == [1, 2]
+        assert all(d["review_cycle"]["limit"] == 3 for d in reworks)
+        assert not any(d["review_cycle"]["over_limit"] for d in reworks)
+
+    def test_cycle_limit_is_advisory_when_lattice_did_not_fire_the_review(
+        self,
+        invoke,
+        initialized_root,
+        fill_plan,
+    ) -> None:
+        """An orchestrated loop passes the limit: allowed, recorded, warned."""
+        task_id = self._create_and_advance_to_review(invoke, fill_plan)
+        for _ in range(3):
+            self._rework_cycle_impl(invoke, fill_plan, task_id)
+
+        r = invoke("status", task_id, "in_progress", "--actor", _ACTOR, "--json")
+        assert r.exit_code == 0, r.output
+        cycle = json.loads(r.output)["data"]["review_cycle"]
+        assert cycle == {"cycle": 4, "limit": 3, "over_limit": True, "enforced": False}
+        assert _status_events(initialized_root, task_id)[-1]["data"]["review_cycle"] == cycle
+
+        invoke("status", task_id, "review", "--actor", _ACTOR)
+        r = invoke("status", task_id, "in_progress", "--actor", _ACTOR)
+        assert r.exit_code == 0, r.output
+        assert "Warning: review cycle 5 passes the limit of 3" in r.output
+
+    def test_cycle_limit_blocks_after_3_reworks_of_auto_fired_reviews(
+        self,
+        invoke,
+        initialized_root,
+        fill_plan,
+        lattice_fires_reviews,
+    ) -> None:
+        """After 3 reworks of Lattice-fired reviews, the 4th is blocked."""
         task_id = self._create_and_advance_to_review(invoke, fill_plan)
 
         # Cycle 1: review -> in_progress -> review
@@ -464,12 +541,32 @@ class TestReviewCycleLimitGating:
         assert parsed["ok"] is False
         assert parsed["error"]["code"] == "REVIEW_CYCLE_LIMIT"
         assert "3" in parsed["error"]["message"]
+        assert "auto-fired" in parsed["error"]["message"]
+
+    def test_manual_review_after_auto_fired_ones_is_advisory(
+        self,
+        invoke,
+        initialized_root,
+        fill_plan,
+        lattice_fires_reviews,
+    ) -> None:
+        """Only the latest entry into review decides: --no-auto-review hands the budget back."""
+        task_id = self._create_and_advance_to_review(invoke, fill_plan)
+        for _ in range(3):
+            self._rework_cycle_impl(invoke, fill_plan, task_id)
+        invoke("status", task_id, "in_progress", "--actor", _ACTOR, "--force", "--reason", "x")
+        invoke("status", task_id, "review", "--no-auto-review", "--actor", _ACTOR)
+
+        r = invoke("status", task_id, "in_progress", "--actor", _ACTOR, "--json")
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["data"]["review_cycle"]["enforced"] is False
 
     def test_cycle_limit_force_override(
         self,
         invoke,
         initialized_root,
         fill_plan,
+        lattice_fires_reviews,
     ) -> None:
         """--force --reason overrides the cycle limit."""
         task_id = self._create_and_advance_to_review(invoke, fill_plan)
@@ -499,6 +596,7 @@ class TestReviewCycleLimitGating:
         invoke,
         initialized_root,
         fill_plan,
+        lattice_fires_reviews,
     ) -> None:
         """Custom review_cycle_limit of 1 blocks after 1 rework."""
         _set_review_cycle_limit(initialized_root, 1)
@@ -520,6 +618,7 @@ class TestReviewCycleLimitGating:
         invoke,
         initialized_root,
         fill_plan,
+        lattice_fires_reviews,
     ) -> None:
         """review -> in_progress and review -> in_planning both count toward limit."""
         task_id = self._create_and_advance_to_review(invoke, fill_plan)
@@ -782,7 +881,28 @@ class TestValidationGate:
         ns = json.loads(r.output)["data"]["next_steps"]
         assert ns["action"] == "validate_e2e"
         assert ns["then"] == "pr_open"
+        assert ns["or"] == "done"
         assert "--role validation" in ns["evidence"]
+
+    def test_in_validation_hint_names_both_routes(
+        self, invoke, initialized_root, fill_plan
+    ) -> None:
+        task_id = self._advance_to_review(invoke, fill_plan)
+        r = invoke("status", task_id, "in_validation", "--actor", _ACTOR)
+        assert (
+            "On pass move to pr_open, or straight to done when the PR already merged" in r.output
+        )
+
+    def test_in_validation_hint_omits_done_without_the_edge(
+        self, invoke, initialized_root, fill_plan
+    ) -> None:
+        config_path = initialized_root / LATTICE_DIR / "config.json"
+        config = json.loads(config_path.read_text())
+        config["workflow"]["transitions"]["in_validation"].remove("done")
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+        task_id = self._advance_to_review(invoke, fill_plan)
+        r = invoke("status", task_id, "in_validation", "--actor", _ACTOR, "--json")
+        assert "or" not in json.loads(r.output)["data"]["next_steps"]
 
     def test_pr_open_blocked_without_validation_evidence(
         self, invoke, initialized_root, fill_plan
@@ -815,7 +935,7 @@ class TestValidationGate:
         assert json.loads(r.output)["ok"] is True
 
     def test_validation_failure_counts_toward_cycle_limit(
-        self, invoke, initialized_root, fill_plan
+        self, invoke, initialized_root, fill_plan, lattice_fires_reviews
     ) -> None:
         """in_validation -> in_progress reworks trip the 3-cycle valve."""
         task_id = self._advance_to_review(invoke, fill_plan)
@@ -829,6 +949,37 @@ class TestValidationGate:
         assert r.exit_code != 0
         parsed = json.loads(r.output)
         assert parsed["error"]["code"] == "REVIEW_CYCLE_LIMIT"
+
+    def test_in_validation_to_done_with_review_evidence(
+        self, invoke, initialized_root, fill_plan
+    ) -> None:
+        """Merge-first flow: review -> (PR merged) -> in_validation -> done, no pr_open detour."""
+        task_id = self._advance_to_review(invoke, fill_plan)
+        invoke("comment", task_id, "Reviewed: PASS", "--role", "review", "--actor", _ACTOR)
+        invoke("status", task_id, "in_validation", "--actor", _ACTOR)
+        r = invoke("status", task_id, "done", "--actor", _ACTOR, "--json")
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["data"]["status"] == "done"
+
+    def test_in_validation_to_done_still_needs_completion_evidence(
+        self, invoke, initialized_root, fill_plan
+    ) -> None:
+        task_id = self._advance_to_review(invoke, fill_plan)
+        invoke("status", task_id, "in_validation", "--actor", _ACTOR)
+        r = invoke("status", task_id, "done", "--actor", _ACTOR, "--json")
+        assert r.exit_code != 0
+        assert json.loads(r.output)["error"]["code"] == "COMPLETION_BLOCKED"
+
+    def test_complete_from_in_validation_skips_the_review_hop(
+        self, invoke, initialized_root, fill_plan
+    ) -> None:
+        task_id = self._advance_to_review(invoke, fill_plan)
+        invoke("status", task_id, "in_validation", "--actor", _ACTOR)
+        r = invoke("complete", task_id, "--review", "Validated after merge.", "--actor", _ACTOR)
+        assert r.exit_code == 0, r.output
+        assert "(in_validation -> done)" in r.output
+        last = _status_events(initialized_root, task_id)[-1]["data"]
+        assert (last["from"], last["to"]) == ("in_validation", "done")
 
     def test_in_validation_to_review_rejected(self, invoke, initialized_root, fill_plan) -> None:
         """No backflow into review — rework re-enters via in_progress."""

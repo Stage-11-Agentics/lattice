@@ -19,8 +19,9 @@ from lattice.core.config import (
     stage11_workflow,
 )
 
-# The previously-shipped default workflow, locked byte-for-byte (AC8a).
-# Do NOT regenerate this from code under test — it is the regression anchor.
+# The shipped default workflow, locked byte-for-byte (AC8a). Edit it only for a
+# deliberate graph change (LAT-395 added in_validation -> done); never
+# regenerate it from code under test — it is the regression anchor.
 _SHIPPED_STAGE11 = {
     "statuses": [
         "backlog",
@@ -49,6 +50,7 @@ _SHIPPED_STAGE11 = {
         ],
         "in_validation": [
             "pr_open",
+            "done",
             "in_progress",
             "in_planning",
             "blocked",
@@ -232,6 +234,10 @@ class TestComposeWorkflow:
         wf = compose_workflow(include_review=True, include_validation=True, include_pr_open=True)
         assert wf["transitions"]["backlog"] == ["in_planning", "cancelled"]
         assert wf["transitions"]["review"][0] == "in_validation"
+
+    def test_validation_can_close_without_pr_open(self) -> None:
+        wf = compose_workflow(include_review=True, include_validation=True, include_pr_open=True)
+        assert wf["transitions"]["in_validation"][:2] == ["pr_open", "done"]
 
     def test_validation_off_routes_review_to_pr_open(self) -> None:
         wf = compose_workflow(include_review=True, include_validation=False, include_pr_open=True)

@@ -64,6 +64,7 @@ from tests.parity.corpus import (
     DashboardPost,
     DeleteFile,
     Git,
+    Op,
     Scenario,
     WriteFile,
 )
@@ -440,6 +441,13 @@ class LocalTarget:
     def fixture(self, root: Path, rel: str, text: str | None, executable: bool) -> bool:
         return False
 
+    def op(self, root: Path, name: str, params: dict[str, Any], actor: str) -> None:
+        """Run one operation on the board as *actor* (an ``Op`` step)."""
+        from lattice.boards import LocalBoard
+        from lattice.ops import Caller
+
+        LocalBoard(root=root, start=root).execute(name, params, Caller(actor=actor))
+
 
 def run_scenario(
     scenario: Scenario, root: Path, *, mode: str, target: LocalTarget | None = None
@@ -528,6 +536,10 @@ def _run_step(step, mode, root, board, env, invoke, target) -> list[dict[str, An
         return [{"git": " ".join(args)}]
     if isinstance(step, DashboardPost):
         return [_dashboard_post(board.lattice_dir, step.path, step.body, env, target)]
+    if isinstance(step, Op):
+        params = {k: board.expand(v) if isinstance(v, str) else v for k, v in step.params.items()}
+        target.op(root, step.name, params, step.actor)
+        return [{"op": step.name}]
     raise TypeError(f"unknown step {step!r}")  # pragma: no cover - corpus authoring error
 
 

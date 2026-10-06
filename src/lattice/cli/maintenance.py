@@ -1,7 +1,7 @@
 """``--offline-maintenance`` for the local-only maintenance commands (SPEC §3.5).
 
-``init``, ``demo init``, ``rebuild``, ``doctor --fix``, ``backfill-ids``, and
-``migrate needs-human`` write a board directly. Each calls
+``init``, ``demo init``, ``rebuild``, ``doctor --fix``, ``backfill-ids``,
+``migrate needs-human``, and ``migrate validation-done`` write a board directly. Each calls
 :func:`maintenance_gate` before it does anything else:
 
 - On a server-owned board (``hosted/owner.json``) the command runs only with

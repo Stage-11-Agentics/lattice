@@ -594,3 +594,74 @@ class TestReachableReviewCommitCommandBoundaries:
         assert (
             set((initialized_root / LATTICE_DIR / "artifacts" / "meta").glob("*")) == before_meta
         )
+
+
+class TestCompleteOnComposedWorkflows:
+    """``complete`` picks its route from the current status (LAT-395)."""
+
+    def _compose(self, root: Path, *, include_review: bool) -> None:
+        from lattice.core.config import compose_workflow
+
+        config_path = root / LATTICE_DIR / "config.json"
+        config = json.loads(config_path.read_text())
+        config["workflow"] = compose_workflow(
+            include_review=include_review, include_validation=True, include_pr_open=True
+        )
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+
+    def _walk(self, invoke, fill_plan, steps: tuple[str, ...]) -> str:
+        r = invoke("create", "Composed task", "--actor", _ACTOR, "--json")
+        task_id = json.loads(r.output)["data"]["id"]
+        invoke("status", task_id, "in_planning", "--actor", _ACTOR)
+        fill_plan(task_id, "Composed task")
+        for step in ("planned", "in_progress", *steps):
+            r = invoke("status", task_id, step, "--actor", _ACTOR, "--json")
+            assert r.exit_code == 0, r.output
+        return task_id
+
+    @pytest.mark.parametrize(
+        ("include_review", "steps"),
+        [(True, ("review", "in_validation")), (False, ("in_validation",))],
+    )
+    def test_complete_from_validation_goes_straight_to_done(
+        self, invoke, initialized_root, fill_plan, include_review, steps
+    ) -> None:
+        self._compose(initialized_root, include_review=include_review)
+        task_id = self._walk(invoke, fill_plan, steps)
+
+        r = invoke(
+            "complete",
+            task_id,
+            "--review",
+            "Review PASS; merged and validated.",
+            "--actor",
+            _ACTOR,
+            "--json",
+        )
+
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["data"]["status"] == "done"
+
+    def test_complete_from_review_still_needs_review_to_done(
+        self, invoke, initialized_root, fill_plan
+    ) -> None:
+        self._compose(initialized_root, include_review=True)
+        task_id = self._walk(invoke, fill_plan, ("review",))
+
+        r = invoke("complete", task_id, "--review", "LGTM", "--actor", _ACTOR, "--json")
+
+        assert r.exit_code != 0
+        error = json.loads(r.output)["error"]
+        assert error["code"] == "INVALID_TRANSITION"
+        assert "review to done" in error["message"]
+
+    def test_human_summary_names_the_direct_route(
+        self, invoke, initialized_root, fill_plan
+    ) -> None:
+        self._compose(initialized_root, include_review=False)
+        task_id = self._walk(invoke, fill_plan, ("in_validation",))
+
+        r = invoke("complete", task_id, "--review", "Validated after merge.", "--actor", _ACTOR)
+
+        assert r.exit_code == 0, r.output
+        assert "(in_validation -> done)" in r.output
