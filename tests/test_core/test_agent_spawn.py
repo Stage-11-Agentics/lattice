@@ -141,6 +141,21 @@ class TestScrubHostSessionEnv:
         ):
             assert legacy in HOST_SESSION_ENV_VARS
 
+    def test_every_panel_tab_surface_identity_var_included(self) -> None:
+        """c11 1.0 reads C11_PANEL_ID first; every generation's spelling must be scrubbed."""
+        for var in (
+            "C11_PANEL_ID",
+            "C11_PANEL_NUM",
+            "C11_TAB_ID",
+            "C11_TAB_NUM",
+            "C11_SURFACE_ID",
+            "C11_SURFACE_NUM",
+            "CMUX_PANEL_ID",
+            "CMUX_TAB_ID",
+            "CMUX_SURFACE_ID",
+        ):
+            assert var in HOST_SESSION_ENV_VARS
+
 
 # ---------------------------------------------------------------------------
 # select_backend()

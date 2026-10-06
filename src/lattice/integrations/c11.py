@@ -46,7 +46,13 @@ from lattice.core.agent_spawn import (
 logger = logging.getLogger(__name__)
 
 
-_REF_RE = re.compile(r"\b(workspace|pane|surface):(\d+)\b")
+# c11 has named the same two kinds of object differently over its releases:
+# a panel was ``surface:N`` (<=0.66), ``tab:N`` (0.67) and is ``panel:N`` (1.0);
+# an area was ``pane:N`` and is now ``area:N``. Parsing accepts every spelling.
+_REF_RE = re.compile(r"\b(workspace|area|pane|panel|tab|surface):(\d+)\b")
+
+_PANEL_KINDS = ("panel", "tab", "surface")
+_AREA_KINDS = ("area", "pane")
 
 
 class C11Backend(Backend):
@@ -300,11 +306,34 @@ def _c11_capture(*args: str) -> str | None:
 
 
 def _parse_refs(text: str) -> dict[str, str]:
-    """Pull ``workspace:N`` / ``pane:N`` / ``surface:N`` refs from c11 output."""
+    """Pull c11 refs out of CLI output, keyed by the kind as c11 spelled it.
+
+    Handles ``OK surface:74 pane:46 workspace:7`` (<=0.66),
+    ``OK tab:74 area:46 workspace:7`` (0.67) and
+    ``OK panel:74 area:46 workspace:7`` (1.0). Use :func:`_panel_ref` and
+    :func:`_area_ref` to read the result without caring which generation spoke.
+    """
     refs: dict[str, str] = {}
     for kind, num in _REF_RE.findall(text or ""):
         refs.setdefault(kind, f"{kind}:{num}")
     return refs
+
+
+def _first_kind(refs: dict[str, str], kinds: tuple[str, ...]) -> str | None:
+    for kind in kinds:
+        if kind in refs:
+            return refs[kind]
+    return None
+
+
+def _panel_ref(refs: dict[str, str]) -> str | None:
+    """The panel (terminal/browser/markdown) ref, whatever c11 called it."""
+    return _first_kind(refs, _PANEL_KINDS)
+
+
+def _area_ref(refs: dict[str, str]) -> str | None:
+    """The area (split region) ref, whatever c11 called it."""
+    return _first_kind(refs, _AREA_KINDS)
 
 
 def _new_workspace() -> str | None:
@@ -348,14 +377,14 @@ def _initial_surface(ws_ref: str) -> str | None:
     """
     out = _c11_capture("list-pane-surfaces", "--workspace", ws_ref)
     if out:
-        surface = _parse_refs(out).get("surface")
+        surface = _panel_ref(_parse_refs(out))
         if surface:
             return surface
     # Fallback: tree output also contains surface refs.
     tree_out = _c11_capture("tree", "--workspace", ws_ref)
     if not tree_out:
         return None
-    return _parse_refs(tree_out).get("surface")
+    return _panel_ref(_parse_refs(tree_out))
 
 
 def _new_pane(ws_ref: str, *, direction: str, title: str | None = None) -> _Slot | None:
@@ -366,10 +395,10 @@ def _new_pane(ws_ref: str, *, direction: str, title: str | None = None) -> _Slot
     if not out:
         return None
     refs = _parse_refs(out)
-    surface = refs.get("surface")
+    surface = _panel_ref(refs)
     if not surface:
         return None
-    return _Slot(pane_ref=refs.get("pane"), surface_ref=surface)
+    return _Slot(pane_ref=_area_ref(refs), surface_ref=surface)
 
 
 def _focus_pane(ws_ref: str, pane_ref: str) -> None:
