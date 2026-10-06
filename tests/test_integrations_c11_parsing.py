@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from lattice.integrations import c11
 from lattice.integrations.c11 import _area_ref, _panel_ref, _parse_refs
 
 
@@ -89,3 +90,55 @@ class TestPanelAndAreaRefs:
         # A build that emits both generations' keys (1.0 prints panel + legacy tab).
         refs = _parse_refs("OK panel:74 tab:74 area:46")
         assert _panel_ref(refs) == "panel:74"
+
+
+_GENERATIONS = [
+    pytest.param("OK surface:74 pane:46 workspace:7", "surface:74", "pane:46", id="pre-0.67"),
+    pytest.param("OK tab:74 area:46 workspace:7", "tab:74", "area:46", id="0.67"),
+    pytest.param("OK panel:74 area:46 workspace:7", "panel:74", "area:46", id="1.0"),
+]
+
+
+class TestCallersPickRightRef:
+    """The callers, not just the parser, must hand back the ref c11 spoke."""
+
+    @pytest.mark.parametrize(("text", "panel", "area"), _GENERATIONS)
+    def test_new_pane(
+        self, monkeypatch: pytest.MonkeyPatch, text: str, panel: str, area: str
+    ) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def fake_capture(*args: str) -> str | None:
+            calls.append(args)
+            return text
+
+        monkeypatch.setattr(c11, "_c11_capture", fake_capture)
+        slot = c11._new_pane("workspace:7", direction="right")
+        assert slot is not None
+        assert slot.surface_ref == panel
+        assert slot.pane_ref == area
+        assert calls[0][0] == "new-pane"
+
+    @pytest.mark.parametrize(("text", "panel", "area"), _GENERATIONS)
+    def test_initial_surface_from_listing(
+        self, monkeypatch: pytest.MonkeyPatch, text: str, panel: str, area: str
+    ) -> None:
+        listing = f"* {panel}  …/code/c11  [selected]"
+        monkeypatch.setattr(c11, "_c11_capture", lambda *args: listing)
+        assert c11._initial_surface("workspace:7") == panel
+
+    @pytest.mark.parametrize(("text", "panel", "area"), _GENERATIONS)
+    def test_initial_surface_falls_back_to_tree(
+        self, monkeypatch: pytest.MonkeyPatch, text: str, panel: str, area: str
+    ) -> None:
+        tree = f"workspace:7\n  {area}\n    {panel}  Terminal\n"
+
+        def fake_capture(*args: str) -> str | None:
+            return None if args[0] == "list-pane-surfaces" else tree
+
+        monkeypatch.setattr(c11, "_c11_capture", fake_capture)
+        assert c11._initial_surface("workspace:7") == panel
+
+    def test_new_pane_without_panel_ref_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(c11, "_c11_capture", lambda *args: "OK workspace:7")
+        assert c11._new_pane("workspace:7", direction="down") is None
