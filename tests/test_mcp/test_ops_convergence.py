@@ -18,6 +18,7 @@ import pytest
 import lattice.boards
 from lattice.core.config import default_config, serialize_config
 from lattice.mcp import tools
+from lattice.ops import Caller
 from lattice.mcp.tools import (
     LatticeToolError,
     lattice_comment,
@@ -99,11 +100,43 @@ class TestOtherStatusRules:
         lattice_status(task_id=tid, new_status="review", actor=ACTOR)
         lattice_status(task_id=tid, new_status="in_progress", actor=ACTOR)
         lattice_status(task_id=tid, new_status="review", actor=ACTOR)
+        # The limit binds only a review Lattice auto-fired (LAT-395).
+        entry = [
+            e
+            for e in _events(lattice_dir, tid)
+            if e["type"] == "status_changed" and e["data"]["to"] == "review"
+        ][-1]
+        lattice.boards.LocalBoard(root=lattice_dir.parent, start=lattice_dir.parent).execute(
+            "task.record_auto_review",
+            {
+                "task": tid,
+                "review_type": "code-review",
+                "mode": "single",
+                "log_path": "auto-code-review.log",
+                "spawned_at": "2026-01-01T00:00:00Z",
+                "pid": 1,
+                "trigger_status_event_id": entry["id"],
+            },
+            Caller(actor="agent:lattice-auto-review"),
+        )
 
         with pytest.raises(LatticeToolError) as info:
             lattice_status(task_id=tid, new_status="in_progress", actor=ACTOR)
 
         assert info.value.code == "REVIEW_CYCLE_LIMIT"
+
+    def test_review_cycle_limit_is_advisory_without_auto_review(
+        self, lattice_env: Path, lattice_dir: Path
+    ) -> None:
+        _set_config(lattice_dir, review_cycle_limit=1)
+        tid = lattice_create(title="Orchestrated", actor=ACTOR)["id"]
+        (lattice_dir / "plans" / f"{tid}.md").write_text("# Plan\n\nOne line.\n")
+        lattice_status(task_id=tid, new_status="in_progress", actor=ACTOR, force=True, reason="x")
+        for status in ("review", "in_progress", "review", "in_progress"):
+            lattice_status(task_id=tid, new_status=status, actor=ACTOR)
+
+        cycle = _events(lattice_dir, tid)[-1]["data"]["review_cycle"]
+        assert cycle == {"cycle": 2, "limit": 1, "over_limit": True, "enforced": False}
 
     def test_invalid_transition_uses_the_cli_code(self, lattice_env: Path) -> None:
         task = lattice_create(title="Jump", actor=ACTOR)

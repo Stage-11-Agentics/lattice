@@ -30,6 +30,23 @@ def _run(board: LocalBoard, op: str, params: dict, actor: str = "agent:t"):  # n
     return board.execute(op, params, Caller(actor=actor))
 
 
+def _record_auto_review(board: LocalBoard, task_id: str) -> None:
+    """Record that Lattice auto-fired the review for the task's latest entry into review."""
+    path = board.lattice_dir / "events" / f"{task_id}.jsonl"
+    events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    entry = [e for e in events if e["type"] == "status_changed" and e["data"]["to"] == "review"]
+    params = {
+        "task": task_id,
+        "review_type": "code-review",
+        "mode": "single",
+        "log_path": "auto-code-review.log",
+        "spawned_at": "2026-01-01T00:00:00Z",
+        "pid": 1,
+        "trigger_status_event_id": entry[-1]["id"],
+    }
+    _run(board, "task.record_auto_review", params, "agent:lattice-auto-review")
+
+
 class TestResolveBoard:
     def test_no_board(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LATTICE_ROOT", raising=False)
@@ -269,9 +286,19 @@ class TestTaskStateRejectionsCarryTheSnapshot:
         config.setdefault("workflow", {})["review_cycle_limit"] = 1
         (board.lattice_dir / "config.json").write_text(json.dumps(config))
         task_id = self._task(board, "in_progress", "review", "in_progress", "review")
+        _record_auto_review(board, task_id)
         exc = self._reject(board, "task.status", {"task": task_id, "new_status": "in_progress"})
         assert exc.code == "REVIEW_CYCLE_LIMIT"
         self._assert_snapshot(exc, task_id, "review")
+
+    def test_review_cycle_limit_is_advisory_without_auto_review(self, board: LocalBoard) -> None:
+        config = board.load_config()
+        config.setdefault("workflow", {})["review_cycle_limit"] = 1
+        (board.lattice_dir / "config.json").write_text(json.dumps(config))
+        task_id = self._task(board, "in_progress", "review", "in_progress", "review")
+        result = _run(board, "task.status", {"task": task_id, "new_status": "in_progress"})
+        cycle = result.events[-1]["data"]["review_cycle"]
+        assert cycle == {"cycle": 2, "limit": 1, "over_limit": True, "enforced": False}
 
     def test_completion_blocked(self, board: LocalBoard) -> None:
         task_id = self._task(board, "in_progress", "review")
