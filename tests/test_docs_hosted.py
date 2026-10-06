@@ -9,10 +9,14 @@ exits 0.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import shutil
 import re
 import shlex
 import subprocess
+import urllib.request
 from pathlib import Path
 
 import click
@@ -427,3 +431,92 @@ def test_move_back_tracks_the_board_only_when_asked(tmp_path: Path, track: str) 
         assert tracked == []
         assert "/.lattice/" in (repo / ".gitignore").read_text()
     assert sh("git status --porcelain") == ""
+
+
+def _json_documents(text: str) -> list[dict]:
+    """Every JSON value printed back to back (curl adds no newline between them)."""
+    decoder = json.JSONDecoder()
+    docs, pos = [], 0
+    while (pos := len(text) - len(text[pos:].lstrip())) < len(text):
+        doc, pos = decoder.raw_decode(text, pos)
+        docs.append(doc)
+    return docs
+
+
+@pytest.mark.skipif(
+    not all(shutil.which(tool) for tool in ("bash", "curl", "jq", "shasum")),
+    reason="the guide's filing recipe needs bash, curl, jq and shasum",
+)
+def test_guide_filing_recipe_files_a_geotagged_photo_and_dedupes(tmp_path: Path) -> None:
+    """Guide section 8's filing-token recipe, run verbatim against a loopback
+    server with a phone-style JPEG. The server strips the photo's metadata
+    before staging, so the recipe must file the hash the staging reply returns,
+    not the hash of the file it uploaded (LAT-421)."""
+    from lattice.server import admin, tokens
+    from lattice.server.testing import make_root, running_server
+    from tests.photo_metadata_helpers import assert_no_identifying_metadata, jpeg_with_gps
+
+    recipe = next(b for b in _shell_blocks(_section(GUIDE.read_text(), 8)) if "/staging/" in b)
+    root = make_root(
+        tmp_path, projects={"demo": {"code": "DEMO"}}, config={"audit": {"enabled": False}}
+    )
+    admin.set_project_config(root, "demo", {"issues.enabled": True})
+    filing = tokens.create_token(
+        root,
+        user="human:intake",
+        machine="intake-worker",
+        actors=("agent:intake-worker",),
+        projects=("demo",),
+        only=("issue.file",),
+        source="reporter-links",
+    )["token"]
+    reader = tokens.create_token(root, user="human:alice", machine="laptop", all_projects=True)
+    photo = jpeg_with_gps()
+    work = tmp_path / "intake"
+    work.mkdir()
+    (work / "shot.jpg").write_bytes(photo)
+
+    with running_server(root) as server:
+        env = {**os.environ, "LATTICE_URL": server.url, "LATTICE_TOKEN": filing}
+        env.pop("IMAGE", None)
+
+        def run_recipe() -> list[dict]:
+            done = subprocess.run(
+                ["bash", "-c", recipe],
+                cwd=work,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert done.returncode == 0, done.stderr
+            return _json_documents(done.stdout)[-2:]  # the filing and its dedupe retry
+
+        first, retry = run_recipe()
+        assert first["ok"], first
+        filed = first["data"]["result"]["value"]
+        assert filed["deduplicated"] is False
+        assert retry["ok"], retry
+        assert retry["data"]["result"]["value"]["deduplicated"] is True
+        assert retry["data"]["result"]["value"]["id"] == filed["id"]
+
+        for receipt in run_recipe():  # a second run of the whole recipe
+            assert receipt["ok"], receipt
+            assert receipt["data"]["result"]["value"]["deduplicated"] is True
+            assert receipt["data"]["result"]["value"]["id"] == filed["id"]
+
+        status, _, issue = server.request(
+            "GET", f"/v1/projects/demo/files/issues/{filed['id']}.json", token=reader["token"]
+        )
+        assert status == 200, issue
+        assert len(issue["media"]) == 1, issue["media"]
+        media = issue["media"][0]
+        assert media["sha256"] != hashlib.sha256(photo).hexdigest()
+        read = urllib.request.Request(
+            f"{server.url}/v1/projects/demo/issues/media/{filed['id']}/{media['id']}",
+            headers={"Authorization": f"Bearer {reader['token']}"},
+        )
+        with urllib.request.urlopen(read, timeout=30) as response:
+            stored = response.read()
+        assert hashlib.sha256(stored).hexdigest() == media["sha256"]
+        assert_no_identifying_metadata(stored, "image/jpeg")
