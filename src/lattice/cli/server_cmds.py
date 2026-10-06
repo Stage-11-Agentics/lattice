@@ -137,12 +137,12 @@ def project_group() -> None:
 @click.option(
     "--auto-code-review/--no-auto-code-review",
     default=None,
-    help="Auto-run a code review on a move to review (default on).",
+    help="Auto-run a code review on a move to review (default off: the orchestrator triggers reviews).",
 )
 @click.option(
     "--auto-plan-review/--no-auto-plan-review",
     default=None,
-    help="Auto-run a plan review on a move to planned (default on).",
+    help="Auto-run a plan review on a move to planned (default off: the orchestrator triggers reviews).",
 )
 @_root_option
 @_json_option

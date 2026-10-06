@@ -8,6 +8,7 @@ from lattice.core.auto_review import (
     AUTO_REVIEW_ACTOR,
     DAEMON_DIR_NAME,
     format_skip_reason,
+    inherited_auto_review_keys,
     resolve_mode,
     review_type_for_status,
     should_auto_fire,
@@ -209,3 +210,36 @@ def test_format_skip_reason_unknown_falls_through() -> None:
     rendered = format_skip_reason("custom_reason")
     assert "auto-review skipped" in rendered
     assert "custom_reason" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Boards that inherited auto-review (LAT-420)
+# ---------------------------------------------------------------------------
+
+
+class TestInheritedAutoReview:
+    def test_unset_keys_still_fire(self) -> None:
+        config = {"review_mode": "single", "plan_review_mode": "single"}
+        assert should_auto_fire(config, "review", no_auto_review_flag=False) == (True, None)
+        assert inherited_auto_review_keys(config) == [
+            "auto_code_review_on_transition",
+            "auto_plan_review_on_transition",
+        ]
+
+    def test_explicit_settings_are_not_inherited(self) -> None:
+        config = {
+            "review_mode": "single",
+            "plan_review_mode": "single",
+            "auto_code_review_on_transition": True,
+            "auto_plan_review_on_transition": False,
+        }
+        assert inherited_auto_review_keys(config) == []
+
+    def test_an_inline_gate_spawns_nothing_so_is_not_listed(self) -> None:
+        config = {"review_mode": "inline", "plan_review_mode": "single"}
+        assert inherited_auto_review_keys(config) == ["auto_plan_review_on_transition"]
+
+    def test_default_config_inherits_nothing(self) -> None:
+        from lattice.core.config import default_config
+
+        assert inherited_auto_review_keys(dict(default_config())) == []

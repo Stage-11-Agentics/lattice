@@ -798,6 +798,26 @@ def check_board(lattice_dir: Path, *, fix: bool = False) -> DoctorReport:
                 }
             )
 
+    # A board that inherited auto-review (no explicit setting) keeps firing
+    # it; new boards start with it off. Advice only, never a warning.
+    if isinstance(config, dict):
+        from lattice.core.auto_review import inherited_auto_review_keys
+
+        inherited = inherited_auto_review_keys(config)
+        if inherited:
+            findings.append(
+                {
+                    "level": "info",
+                    "check": "auto_review_default",
+                    "message": (
+                        f"Auto-review is on by inheritance ({', '.join(inherited)} unset). "
+                        "New boards start with it off because the orchestrator triggers "
+                        "reviews; set it to false, or true to keep it for unorchestrated use."
+                    ),
+                    "task_id": None,
+                }
+            )
+
     # -----------------------------------------------------------------
     # Check 2: JSONL parseability
     # -----------------------------------------------------------------

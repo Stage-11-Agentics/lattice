@@ -516,8 +516,10 @@ def default_config(preset: str = "classic", status_preset: str = "stage11") -> L
         "review_timeout_seconds": 600,
         "review_max_diff_lines": 5000,
         "review_max_diff_chars": 120000,
-        "auto_code_review_on_transition": True,
-        "auto_plan_review_on_transition": True,
+        # Reviews are triggered by whoever orchestrates the work; Lattice
+        # firing them on a status change is an opt-in for unorchestrated use.
+        "auto_code_review_on_transition": False,
+        "auto_plan_review_on_transition": False,
         "done_display": "grouped",
     }
 

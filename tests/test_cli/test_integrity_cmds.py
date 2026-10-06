@@ -409,6 +409,35 @@ class TestDoctor:
         assert "Malformed task ID" in result.output
         assert "no authoritative event log" in result.output
 
+    def test_doctor_notes_inherited_auto_review(self, create_task, invoke, initialized_root):
+        """A board with no auto-review setting gets one advisory line (LAT-420)."""
+        config_path = initialized_root / ".lattice" / "config.json"
+        config = json.loads(config_path.read_text())
+        del config["auto_code_review_on_transition"]
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+
+        result = invoke("doctor")
+
+        assert result.exit_code == 0
+        notes = [line for line in result.output.splitlines() if "Auto-review is on" in line]
+        assert notes == [
+            "\u2139 Auto-review is on by inheritance (auto_code_review_on_transition unset). "
+            "New boards start with it off because the orchestrator triggers reviews; "
+            "set it to false, or true to keep it for unorchestrated use."
+        ]
+        assert "No issues found" in result.output
+
+        parsed = json.loads(invoke("doctor", "--json").output)
+        finding = next(
+            f for f in parsed["data"]["findings"] if f["check"] == "auto_review_default"
+        )
+        assert finding["level"] == "info"
+        assert parsed["data"]["summary"]["warnings"] == 0
+
+    def test_doctor_is_quiet_about_explicit_auto_review(self, create_task, invoke):
+        result = invoke("doctor")
+        assert "Auto-review" not in result.output
+
     def test_doctor_json_output(self, create_task, invoke):
         """Run doctor with --json, verify structured output."""
         create_task("JSON test")
