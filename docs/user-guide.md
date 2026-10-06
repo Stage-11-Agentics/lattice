@@ -243,7 +243,7 @@ not everything an agent notices is a commitment. a flaky test. a footer that ove
 
 the issue log is the place in between. an issue is an observation with a short title and, if needed, a description. file it in one command. later, someone triages the log. an issue becomes a task, joins an existing task, or gets closed.
 
-it is off by default. on a local board, add `"issues": {"enabled": true}` to `.lattice/config.json`. on a hosted board, a server admin turns it on with `lattice server project config <slug> --set issues.enabled=true`. before importing or enabling issues on a hosted project, upgrade every client to at least `0.2.2`, then the server.
+it is off by default. on a local board, add `"issues": {"enabled": true}` to `.lattice/config.json`. on a hosted board, a server admin turns it on with `lattice server project config <slug> --set issues.enabled=true`. before importing or enabling issues on a hosted project, upgrade every client to `0.2.3`, then the server.
 
 then run `lattice setup-claude --force`, so your agents' CLAUDE.md learns the new commands.
 

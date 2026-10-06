@@ -97,12 +97,13 @@ def test_client_too_old(server: ServerHandle, root: Path) -> None:
     assert board_hash(root, "alpha") == before
 
 
-def test_phase_one_floor_and_package_version_are_022(server: ServerHandle, root: Path) -> None:
+def test_floor_stays_022_while_the_package_is_023(server: ServerHandle, root: Path) -> None:
+    """The minimum client marks the issue-path capability floor, not the release."""
     project_root = Path(__file__).resolve().parents[2]
     with (project_root / "pyproject.toml").open("rb") as stream:
         package = tomllib.load(stream)
     assert MIN_CLIENT_VERSION == "0.2.2"
-    assert package["project"]["version"] == "0.2.2"
+    assert package["project"]["version"] == "0.2.3"
     status, headers, body = server.request("GET", "/v1/info", token=mint(root))
     assert status == 200
     assert body["data"]["min_client_version"] == "0.2.2"

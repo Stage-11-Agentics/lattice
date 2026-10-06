@@ -1473,3 +1473,15 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   the completed task's own branch must be linked and the caller's `HEAD` must
   be an ancestor of that still-existing branch at completion time. Branch
   linking alone is not sufficient; complete before the branch is deleted.
+
+## 2026-10-06: Release 0.2.3 keeps the 0.2.2 client floor (LAT-423)
+
+- **Decision:** the package moves to `0.2.3` for filing-only tokens, reporter
+  links, the hosted Issues view and LAT-383 photo staging. `min_client_version`
+  and the issue-log server floor stay `0.2.2`: they mark capability floors, not
+  the release.
+- **Why:** pre- and post-LAT-383 builds both reported `0.2.2`, so
+  `lattice --version` could not tell a stale client from a current one. The new
+  number makes "clients first" checkable. A `0.2.2` client against a `0.2.3`
+  server gets the one-line upgrade notice rather than `CLIENT_TOO_OLD` (Atin's
+  call: a soft nudge, no hard refusal).
