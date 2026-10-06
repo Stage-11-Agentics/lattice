@@ -434,7 +434,7 @@ lattice server project reporter-link revoke link_01J...
 
 `--public-base-url` is required and must be the externally reachable HTTPS base URL. Include any reverse-proxy path prefix; the generated page, stylesheet, and script use relative URLs. Configure the proxy to map that prefixed `/r/...` path to the server's `/r/...` route. HTTP is accepted only for loopback development. The server stores the base origin separately and accepts it as the write `Origin`, including when a proxy rewrites `Host`; this does not add it to `public_origins`, which remains the dashboard's browser-origin allowlist.
 
-The form accepts photos and videos. Like the hosted dashboard, it prepares video on the server, which needs ffmpeg and ffprobe there (section 5); without them it refuses a video and files nothing. Photos do not need ffmpeg.
+The form accepts photos and videos. Like the hosted dashboard, it prepares video on the server, which needs ffmpeg and ffprobe there (section 5); without them it refuses a video and files nothing. JPEG and PNG photos do not need ffmpeg.
 
 Each link owns a separate filing-only token bound to `reporter-link:<link-id>`, with limits of 30 operations per minute, 256 MiB of request bytes per minute, and 512 MiB of staged media. The browser receives no token. Create prints the secret URL once; list omits it. A successful form submission returns only the filing receipt, and revoke disables the link and removes that token's unreferenced staged media while preserving hashes owned by another token.
 
@@ -455,8 +455,6 @@ STAGED="$(curl -sS -X PUT \
   -H "Content-Length: $UPLOAD_SIZE" \
   --data-binary @"$IMAGE" \
   "$LATTICE_URL/v1/projects/demo/issues/media/staging/$UPLOAD_SHA256")"
-SHA256="$(jq -er '.data.sha256' <<<"$STAGED")" || echo "Staging failed: $STAGED" >&2
-SIZE="$(jq -r '.data.size_bytes' <<<"$STAGED")"
 
 new_op_id() {
   python3 - <<'PY'
@@ -467,26 +465,32 @@ print("op_" + "".join(alphabet[(value >> (5 * i)) & 31] for i in range(25, -1, -
 PY
 }
 
-OP_ID="$(new_op_id)"
-jq -n \
-  --arg op_id "$OP_ID" \
-  --arg filename "$IMAGE" \
-  --arg sha256 "$SHA256" \
-  --argjson size "$SIZE" \
-  '{op_id:$op_id, actor:"agent:intake-worker", params:{title:"Export fails after reconnect", description:"The original report text is untrusted input.", source:"reporter-links", source_ref:"ISS-7K2MQ", on_behalf_of:"Alex Example <alex@example.test>", media:[{payload:{filename:$filename, sha256:$sha256, size:$size, staged:true}}]}}' \
-  | curl -sS -H "Authorization: Bearer $LATTICE_TOKEN" \
-      -H 'Content-Type: application/json' --data-binary @- \
-      "$LATTICE_URL/v1/projects/demo/ops/issue.file"
+if SHA256="$(jq -er '.data.sha256' <<<"$STAGED")"; then
+  SIZE="$(jq -r '.data.size_bytes' <<<"$STAGED")"
 
-OP_ID="$(new_op_id)"
-jq -n --arg op_id "$OP_ID" \
-  '{op_id:$op_id, actor:"agent:intake-worker", params:{title:"Export fails after reconnect", source:"reporter-links", source_ref:"ISS-7K2MQ"}}' \
-  | curl -sS -H "Authorization: Bearer $LATTICE_TOKEN" \
-      -H 'Content-Type: application/json' --data-binary @- \
-      "$LATTICE_URL/v1/projects/demo/ops/issue.file"
+  OP_ID="$(new_op_id)"
+  jq -n \
+    --arg op_id "$OP_ID" \
+    --arg filename "$IMAGE" \
+    --arg sha256 "$SHA256" \
+    --argjson size "$SIZE" \
+    '{op_id:$op_id, actor:"agent:intake-worker", params:{title:"Export fails after reconnect", description:"The original report text is untrusted input.", source:"reporter-links", source_ref:"ISS-7K2MQ", on_behalf_of:"Alex Example <alex@example.test>", media:[{payload:{filename:$filename, sha256:$sha256, size:$size, staged:true}}]}}' \
+    | curl -sS -H "Authorization: Bearer $LATTICE_TOKEN" \
+        -H 'Content-Type: application/json' --data-binary @- \
+        "$LATTICE_URL/v1/projects/demo/ops/issue.file"
+
+  OP_ID="$(new_op_id)"
+  jq -n --arg op_id "$OP_ID" \
+    '{op_id:$op_id, actor:"agent:intake-worker", params:{title:"Export fails after reconnect", source:"reporter-links", source_ref:"ISS-7K2MQ"}}' \
+    | curl -sS -H "Authorization: Bearer $LATTICE_TOKEN" \
+        -H 'Content-Type: application/json' --data-binary @- \
+        "$LATTICE_URL/v1/projects/demo/ops/issue.file"
+else
+  echo "Staging failed; nothing was filed: $STAGED" >&2
+fi
 ```
 
-The staging reply's `upload_sha256` is the uploaded file's hash; `sha256` and `size_bytes` name the stored copy, and only they are accepted in `media[].payload` (a photo filed under its upload hash answers `NOT_FOUND`). The first filing response contains a filing receipt with `deduplicated: false` and `events: []`. The second has the same issue `id`, `short_id`, `filed_at`, `source`, and `source_ref`, with `deduplicated: true`, `idempotent: true`, and `events: []`. It does not need to upload or send media again. A source/ref match can return an issue originally filed by another token. Any retry media the filing token staged stays owned by it and counts against its staged-byte quota until expiry; the dedupe hit neither attaches nor consumes it. Filing-only responses never include issue text, evidence, media details, task links, or closure state; `task`, `resource_id`, and `resource_name` are always null. Full issue views are returned only to unrestricted tokens. A distinct operation still has its ordinary journal entry and receipt, but the source-ref hit creates no second `issue_filed` event.
+The staging reply's `upload_sha256` is the uploaded file's hash; `sha256` and `size_bytes` name the stored copy, and only they are accepted in `media[].payload` (a photo filed under its upload hash answers `NOT_FOUND`). The recipe files only when staging succeeded: a filing without its photo would use up the `source_ref`, and every later retry would dedupe to that photo-less issue. A retry without media, like the second call, is safe only after a filing that landed. The first filing response contains a filing receipt with `deduplicated: false` and `events: []`. The second has the same issue `id`, `short_id`, `filed_at`, `source`, and `source_ref`, with `deduplicated: true`, `idempotent: true`, and `events: []`. It does not need to upload or send media again. A source/ref match can return an issue originally filed by another token. Any retry media the filing token staged stays owned by it and counts against its staged-byte quota until expiry; the dedupe hit neither attaches nor consumes it. Filing-only responses never include issue text, evidence, media details, task links, or closure state; `task`, `resource_id`, and `resource_name` are always null. Full issue views are returned only to unrestricted tokens. A distinct operation still has its ordinary journal entry and receipt, but the source-ref hit creates no second `issue_filed` event.
 
 Because op-status is denied to this token, retry a possibly lost filing with the same bound `source` and `source_ref`. Reuse the same `op_id` for the normal operation-receipt replay while retained, or use a fresh `op_id` and receive the source-ref dedupe receipt. The source-ref pair is the safe recovery key, including after the seven-day operation-receipt window.
 
@@ -819,7 +823,7 @@ By default, import copies issue media into private server storage along with the
 lattice server project import legacy --from "$TRIAL/legacy-copy" --omit-media
 ```
 
-`--omit-media` is an explicit metadata-only choice. Issue metadata syncs to bound clients; media bytes do not enter ordinary sync, reset manifests, deltas, stream events, or audit history. When a user requests media, a bound checkout fetches it on demand into a separate private `.lattice/cache/issue-media/` cache. `lattice cache clear` removes that cache. Default import and later uploads retain the media in private server storage. JPEG and PNG photo metadata, including location, is stripped before media is stored; valid EXIF orientation is preserved. An import sanitizes JPEG and PNG originals and video-frame JPEGs in the imported copy, leaving the source board unchanged. Pass `--keep-photo-metadata` to `lattice server project import` only when a malformed photo or HEIC file cannot be sanitized; valid JPEG and PNG files are still sanitized. `--omit-media` reads no photo bytes, so its report marks photos unchecked. For local filing, `issue file --evidence` and `issue attach` refuse an unconvertible HEIC or malformed photo unless you explicitly pass `--keep-photo-metadata`; valid JPEG and PNG remain sanitized with that option. The dashboard has no photo-metadata keep control and prints the CLI escape path. GIF and WebP metadata is unchanged. A video's metadata, which can include where it was recorded, is stripped by ffmpeg on the machine that files it, before upload; when ffmpeg is missing, turned off (`LATTICE_FFMPEG=off`) or fails, local filing refuses the video unless the filer passes `--keep-video-metadata`. The hosted dashboard prepares video on the server instead and requires its ffmpeg/ffprobe toolchain (§8.12); if unavailable, disabled, or unable to strip location data, hosted video staging refuses with `MEDIA_STAGE_UNAVAILABLE`.
+`--omit-media` is an explicit metadata-only choice. Issue metadata syncs to bound clients; media bytes do not enter ordinary sync, reset manifests, deltas, stream events, or audit history. When a user requests media, a bound checkout fetches it on demand into a separate private `.lattice/cache/issue-media/` cache. `lattice cache clear` removes that cache. Default import and later uploads retain the media in private server storage. JPEG and PNG photo metadata, including location, is stripped before media is stored; valid EXIF orientation is preserved. An import sanitizes JPEG and PNG originals and video-frame JPEGs in the imported copy, leaving the source board unchanged. Pass `--keep-photo-metadata` to `lattice server project import` only when a malformed photo or HEIC file cannot be sanitized; valid JPEG and PNG files are still sanitized. `--omit-media` reads no photo bytes, so its report marks photos unchecked. For local filing, `issue file --evidence` and `issue attach` refuse an unconvertible HEIC or malformed photo unless you explicitly pass `--keep-photo-metadata`; valid JPEG and PNG remain sanitized with that option. The dashboard has no photo-metadata keep control and prints the CLI escape path. GIF and WebP metadata is unchanged. A video's metadata, which can include where it was recorded, is stripped by ffmpeg on the machine that files it, before upload; when ffmpeg is missing, turned off (`LATTICE_FFMPEG=off`) or fails, local filing refuses the video unless the filer passes `--keep-video-metadata`. The hosted dashboard and public reporter-link forms prepare video on the server instead and require its ffmpeg/ffprobe toolchain (section 5); if unavailable, disabled, or unable to strip location data, hosted video staging refuses with `MEDIA_STAGE_UNAVAILABLE`.
 
 Before creating the project's staging directory or writing any imported file, the importer replays and validates source issue logs and metadata, then preflights every referenced original and frame. It refuses symlinks and special files, checks media IDs, extensions and lowercase SHA-256 fields, verifies file contents against their hashes, and calculates all three media quotas. Only after preflight succeeds does it stage the import, rebuild issue snapshots, and publish the project. Limits are 100 MiB per stored file, 250 MiB per issue including frame sidecars, and 10 GiB per project by default; the project cap is configurable as `max_issue_media_project_bytes` in `server.json`. Missing or corrupt media and any quota failure stop the default import before imported files are written. The error names an exceeded quota and says when `--omit-media` is an acceptable retry.
 

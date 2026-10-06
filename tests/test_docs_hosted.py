@@ -451,9 +451,11 @@ def test_guide_filing_recipe_files_a_geotagged_photo_and_dedupes(tmp_path: Path)
     """Guide section 8's filing-token recipe, run verbatim against a loopback
     server with a phone-style JPEG. The server strips the photo's metadata
     before staging, so the recipe must file the hash the staging reply returns,
-    not the hash of the file it uploaded (LAT-421)."""
+    not the hash of the file it uploaded (LAT-421). A refused staging must file
+    nothing, or the photo-less issue would use up the source_ref."""
     from lattice.server import admin, tokens
     from lattice.server.testing import make_root, running_server
+    from lattice.storage.issues import list_issue_snapshots
     from tests.photo_metadata_helpers import assert_no_identifying_metadata, jpeg_with_gps
 
     recipe = next(b for b in _shell_blocks(_section(GUIDE.read_text(), 8)) if "/staging/" in b)
@@ -475,24 +477,33 @@ def test_guide_filing_recipe_files_a_geotagged_photo_and_dedupes(tmp_path: Path)
     work = tmp_path / "intake"
     work.mkdir()
     (work / "shot.jpg").write_bytes(photo)
+    (work / "broken.jpg").write_bytes(b"\xff\xd8\xff\xe1\x00\x20Exif")  # unstrippable
 
     with running_server(root) as server:
         env = {**os.environ, "LATTICE_URL": server.url, "LATTICE_TOKEN": filing}
-        env.pop("IMAGE", None)
 
-        def run_recipe() -> list[dict]:
+        def run_recipe(image: str = "shot.jpg") -> subprocess.CompletedProcess:
             done = subprocess.run(
                 ["bash", "-c", recipe],
                 cwd=work,
-                env=env,
+                env={**env, "IMAGE": image},
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
             assert done.returncode == 0, done.stderr
-            return _json_documents(done.stdout)[-2:]  # the filing and its dedupe retry
+            return done
 
-        first, retry = run_recipe()
+        refused = run_recipe("broken.jpg")
+        assert list_issue_snapshots(root / "projects" / "demo" / ".lattice") == []
+        assert _json_documents(refused.stdout) == []
+        assert "Staging failed; nothing was filed" in refused.stderr
+        assert "VALIDATION_ERROR" in refused.stderr
+
+        def file_photo() -> list[dict]:
+            return _json_documents(run_recipe().stdout)  # the filing and its dedupe retry
+
+        first, retry = file_photo()
         assert first["ok"], first
         filed = first["data"]["result"]["value"]
         assert filed["deduplicated"] is False
@@ -500,7 +511,7 @@ def test_guide_filing_recipe_files_a_geotagged_photo_and_dedupes(tmp_path: Path)
         assert retry["data"]["result"]["value"]["deduplicated"] is True
         assert retry["data"]["result"]["value"]["id"] == filed["id"]
 
-        for receipt in run_recipe():  # a second run of the whole recipe
+        for receipt in file_photo():  # a second run of the whole recipe
             assert receipt["ok"], receipt
             assert receipt["data"]["result"]["value"]["deduplicated"] is True
             assert receipt["data"]["result"]["value"]["id"] == filed["id"]
