@@ -140,3 +140,24 @@ def test_same_version_prints_nothing(hosted_env: HostedEnv, repo: Path) -> None:
     read = run_cli(repo, "list")
     assert read.exit_code == 0
     assert _notices(read.stderr) == []
+
+
+def test_a_022_client_against_this_release_is_nudged_not_refused(
+    hosted_env: HostedEnv, repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LAT-423: the package moved to 0.2.3 while the minimum client stays 0.2.2,
+    so a 0.2.2 client gets the one-line upgrade hint and its writes still land."""
+    from lattice.remote import http
+    from lattice.server.protocol import MIN_CLIENT_VERSION
+
+    assert hosted_env.handle.state.version == __version__ == "0.2.3"
+    assert MIN_CLIENT_VERSION == "0.2.2"
+    monkeypatch.setattr(http, "_client_version", lambda: "0.2.2")
+    read = run_cli(repo, "show", "DEM-1")
+    assert read.exit_code == 0, read.output
+    assert _notices(read.stderr) == [
+        "lattice: server runs Lattice 0.2.3, this client 0.2.2; upgrade to read every event type"
+    ]
+    write = run_cli(repo, "comment", "DEM-1", "still here", "--actor", "human:alice", "--json")
+    assert write.exit_code == 0, write.output
+    assert json.loads(write.stdout)["ok"] is True

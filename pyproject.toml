@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lattice-tracker"
-version = "0.2.2"
+version = "0.2.3"
 description = "Task tracking with agent-native assumptions, based on the file system."
 requires-python = ">=3.12"
 license = "MIT"

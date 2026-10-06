@@ -345,7 +345,7 @@ curl -s -H "Authorization: Bearer $LATTICE_TOKEN" "$LATTICE_URL/p/demo/api/tasks
 
 ## Version compatibility
 
-The hosted issue path sets both the pre-release package version and `min_client_version` to `0.2.2`. The minimum applies to writes server-wide: every operation request from a client below the floor is rejected with `CLIENT_TOO_OLD` before execution, even on a project without issues. Sync and stream have a separate conditional data gate: when a project holds any synced issue file (even an ID map with no entries), a client below `0.2.2` is refused before any delta, reset manifest, heartbeat, or stream event is returned. Projects with no synced issue file keep their existing read behavior. The conditional read gate protects the newly synced issue path; it does not replace or narrow the server-wide write refusal.
+The hosted issue path sets `min_client_version` to `0.2.2`; the `0.2.3` package keeps that floor. The minimum applies to writes server-wide: every operation request from a client below the floor is rejected with `CLIENT_TOO_OLD` before execution, even on a project without issues. Sync and stream have a separate conditional data gate: when a project holds any synced issue file (even an ID map with no entries), a client below `0.2.2` is refused before any delta, reset manifest, heartbeat, or stream event is returned. Projects with no synced issue file keep their existing read behavior. The conditional read gate protects the newly synced issue path; it does not replace or narrow the server-wide write refusal.
 
 ## Error codes
 
