@@ -226,7 +226,7 @@ That is a working hosted board. Leave the server running: the examples in later 
 
 ## 5. Install
 
-The server needs the `server` extra, which adds Starlette and uvicorn. Hosted dashboard video filing also needs ffmpeg and ffprobe on the server: set `LATTICE_FFMPEG` to the ffmpeg binary (ffprobe is found beside it), or leave it unset to discover both on `PATH`; supported photos do not require ffmpeg. Clients need only the base install; the extra is harmless on a client.
+The server needs the `server` extra, which adds Starlette and uvicorn. Video filing through the hosted dashboard and through a public reporter link's form (section 8) also needs ffmpeg and ffprobe on the server: set `LATTICE_FFMPEG` to the ffmpeg binary (ffprobe is found beside it), or leave it unset to discover both on `PATH`; supported photos do not require ffmpeg. Clients need only the base install; the extra is harmless on a client.
 
 <!-- guide: skip: installs from the network; the runner uses the repository's virtualenv -->
 ```bash
@@ -434,25 +434,29 @@ lattice server project reporter-link revoke link_01J...
 
 `--public-base-url` is required and must be the externally reachable HTTPS base URL. Include any reverse-proxy path prefix; the generated page, stylesheet, and script use relative URLs. Configure the proxy to map that prefixed `/r/...` path to the server's `/r/...` route. HTTP is accepted only for loopback development. The server stores the base origin separately and accepts it as the write `Origin`, including when a proxy rewrites `Host`; this does not add it to `public_origins`, which remains the dashboard's browser-origin allowlist.
 
+The form accepts photos and videos. Like the hosted dashboard, it prepares video on the server, which needs ffmpeg and ffprobe there (section 5); without them it refuses a video and files nothing. Photos do not need ffmpeg.
+
 Each link owns a separate filing-only token bound to `reporter-link:<link-id>`, with limits of 30 operations per minute, 256 MiB of request bytes per minute, and 512 MiB of staged media. The browser receives no token. Create prints the secret URL once; list omits it. A successful form submission returns only the filing receipt, and revoke disables the link and removes that token's unreferenced staged media while preserving hashes owned by another token.
 
 The issue media file cap is the live `limits.max_issue_media_file_bytes` (100 MiB by default). An unset filing-token byte rate is `max(64 MiB, the current per-file cap)`, so one legal upload fits. An explicit `--bytes-per-minute` override for any token must be at least the current per-file cap at mint. If a later server config change makes one body larger than a token's effective byte capacity, it gets a non-retryable 413 `PAYLOAD_TOO_LARGE` with `details.scope: "token"`.
 
-The following example stages one image as raw bytes, files it, then repeats the same `(source, source_ref)` with a fresh operation ID. It uses `jq` to JSON-escape the request and Python's standard library to mint operation IDs:
+The following example stages one image as raw bytes, files it, then repeats the same `(source, source_ref)` with a fresh operation ID. It uses `jq` to read the staging reply and JSON-escape the request, and Python's standard library to mint operation IDs. The server strips JPEG and PNG metadata (including location) before it stores a photo, so the stored hash and size can differ from the uploaded file's; the filing sends the canonical `data.sha256` and `data.size_bytes` from the staging reply, never the file's own hash:
 
 ```bash
 export LATTICE_URL="${LATTICE_URL:-http://127.0.0.1:8740}"
 : "${LATTICE_TOKEN:?Export LATTICE_TOKEN from the intake service secret store first}"
 IMAGE="${IMAGE:-shot.jpg}"
-SHA256="$(shasum -a 256 "$IMAGE" | awk '{print $1}')"
-SIZE="$(wc -c < "$IMAGE" | tr -d '[:space:]')"
+UPLOAD_SHA256="$(shasum -a 256 "$IMAGE" | awk '{print $1}')"
+UPLOAD_SIZE="$(wc -c < "$IMAGE" | tr -d '[:space:]')"
 
-curl -sS -X PUT \
+STAGED="$(curl -sS -X PUT \
   -H "Authorization: Bearer $LATTICE_TOKEN" \
   -H 'Content-Type: application/octet-stream' \
-  -H "Content-Length: $SIZE" \
+  -H "Content-Length: $UPLOAD_SIZE" \
   --data-binary @"$IMAGE" \
-  "$LATTICE_URL/v1/projects/demo/issues/media/staging/$SHA256"
+  "$LATTICE_URL/v1/projects/demo/issues/media/staging/$UPLOAD_SHA256")"
+SHA256="$(jq -er '.data.sha256' <<<"$STAGED")" || echo "Staging failed: $STAGED" >&2
+SIZE="$(jq -r '.data.size_bytes' <<<"$STAGED")"
 
 new_op_id() {
   python3 - <<'PY'
@@ -482,7 +486,7 @@ jq -n --arg op_id "$OP_ID" \
       "$LATTICE_URL/v1/projects/demo/ops/issue.file"
 ```
 
-The first response contains a filing receipt with `deduplicated: false` and `events: []`. The second has the same issue `id`, `short_id`, `filed_at`, `source`, and `source_ref`, with `deduplicated: true`, `idempotent: true`, and `events: []`. It does not need to upload or send media again. A source/ref match can return an issue originally filed by another token. Any retry media the filing token staged stays owned by it and counts against its staged-byte quota until expiry; the dedupe hit neither attaches nor consumes it. Filing-only responses never include issue text, evidence, media details, task links, or closure state; `task`, `resource_id`, and `resource_name` are always null. Full issue views are returned only to unrestricted tokens. A distinct operation still has its ordinary journal entry and receipt, but the source-ref hit creates no second `issue_filed` event.
+The staging reply's `upload_sha256` is the uploaded file's hash; `sha256` and `size_bytes` name the stored copy, and only they are accepted in `media[].payload` (a photo filed under its upload hash answers `NOT_FOUND`). The first filing response contains a filing receipt with `deduplicated: false` and `events: []`. The second has the same issue `id`, `short_id`, `filed_at`, `source`, and `source_ref`, with `deduplicated: true`, `idempotent: true`, and `events: []`. It does not need to upload or send media again. A source/ref match can return an issue originally filed by another token. Any retry media the filing token staged stays owned by it and counts against its staged-byte quota until expiry; the dedupe hit neither attaches nor consumes it. Filing-only responses never include issue text, evidence, media details, task links, or closure state; `task`, `resource_id`, and `resource_name` are always null. Full issue views are returned only to unrestricted tokens. A distinct operation still has its ordinary journal entry and receipt, but the source-ref hit creates no second `issue_filed` event.
 
 Because op-status is denied to this token, retry a possibly lost filing with the same bound `source` and `source_ref`. Reuse the same `op_id` for the normal operation-receipt replay while retained, or use a fresh `op_id` and receive the source-ref dedupe receipt. The source-ref pair is the safe recovery key, including after the seven-day operation-receipt window.
 
