@@ -580,6 +580,13 @@ def test_filing_routes_fail_closed_for_every_registered_non_filing_method(
         "/p/{slug}/issues/media/{issue_id}/{media_id}",
         "/p/{slug}/static/{path:path}",
         "/p/{slug}/api/{path:path}",
+        "/r/{secret}/media/{source_ref}/{sha256}",
+        "/r/{secret}/submit",
+        "/r/{secret}/{name}",
+        "/r/{secret}/",
+        "/r/{secret}",
+        "/r",
+        "/r/{path:path}",
         "/{path:path}",
     }
     registered_patterns = {route.path for route in routes}
@@ -587,6 +594,12 @@ def test_filing_routes_fail_closed_for_every_registered_non_filing_method(
 
     candidates: set[tuple[str, str]] = set()
     for route in routes:
+        if route.path == "/r" or route.path.startswith("/r/"):
+            # Reporter links deliberately bypass FilingTokenGuard and perform
+            # their own secret-to-token resolution.
+            if route.path in {"/r", "/r/{path:path}"}:
+                assert route.methods is None
+            continue
         route_paths = [route.path]
         if "{op}" in route.path:
             operation_names = (*registered_operations(), "unknown")
@@ -601,6 +614,8 @@ def test_filing_routes_fail_closed_for_every_registered_non_filing_method(
                 .replace("{frame}", "0000000000.jpg")
                 .replace("{task_id}", "ALP-1")
                 .replace("{name}", "dashboard.css")
+                .replace("{secret}", "rpt_" + "A" * 43)
+                .replace("{source_ref}", "A" * 26)
             )
             for method in route.methods or {"GET"}:
                 candidates.add((method, path))

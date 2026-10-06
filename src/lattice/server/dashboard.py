@@ -330,46 +330,15 @@ async def issue_media(request: Request, state: ServerState) -> Response:
 
 def _stage_prepared_media(project: Project, filename: str, content: bytes) -> dict:
     """Prepare one browser file and stage its stored original and video frames."""
-    from lattice.core.issue_media import clean_original_name
-    from lattice.dashboard.media_prep import prepare_issue_media
-    from lattice.ops.issue_common import check_media_items
-    from lattice.ops.task_attach import decode_payload, encode_payload
+    from lattice.server.media_staging import stage_prepared_media
 
-    filename = clean_original_name(filename) or "attachment"
-    prepared_items = prepare_issue_media(
-        [{"payload": encode_payload(filename, content)}], refuse_video_without_ffmpeg=True
+    return stage_prepared_media(
+        project,
+        filename,
+        content,
+        dashboard=True,
+        refuse_video_without_ffmpeg=True,
     )
-    if len(prepared_items) != 1:
-        raise OpError("WRITE_ERROR", "media preparation returned an invalid item count.")
-    prepared = prepared_items[0]
-    check_media_items((prepared,))
-
-    def stage(payload: dict) -> dict:
-        item_name, data = decode_payload(payload)
-        digest = hashlib.sha256(data).hexdigest()
-        upload = project.issue_media.begin_upload(digest, len(data), dashboard=True)
-        try:
-            upload.write(data)
-            result = upload.finish()
-        except BaseException:
-            upload.abort()
-            raise
-        return {
-            "filename": item_name,
-            "sha256": result["sha256"],
-            "size": result["size_bytes"],
-            "staged": True,
-        }
-
-    staged = {key: value for key, value in prepared.items() if key not in ("payload", "frames")}
-    staged["payload"] = stage(prepared["payload"])
-    staged["frames"] = [
-        {"t_ms": frame["t_ms"], "payload": stage(frame["payload"])}
-        for frame in prepared.get("frames", [])
-    ]
-    if not staged["frames"]:
-        staged.pop("frames")
-    return staged
 
 
 async def issue_media_stage(request: Request, state: ServerState) -> Response:

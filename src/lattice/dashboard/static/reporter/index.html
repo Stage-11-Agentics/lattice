@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Report an issue</title>
+  <link rel="stylesheet" href="./reporter.css">
+  <script defer src="./reporter.js"></script>
+</head>
+<body>
+  <main class="report-card">
+    <header class="report-head">
+      <span class="eyebrow">ISSUE REPORT</span>
+      <h1>What happened?</h1>
+      <p>Send the details to the team. Photos and videos are prepared privately before filing.</p>
+    </header>
+    <form id="report-form" novalidate>
+      <label for="title">Title <span aria-hidden="true">*</span></label>
+      <input id="title" name="title" type="text" maxlength="200" required autocomplete="off">
+      <label for="description">What happened?</label>
+      <textarea id="description" name="description" rows="5" maxlength="60000" placeholder="Include the steps and what you expected."></textarea>
+      <details class="reporter-details">
+        <summary>Add your name or email <span>(optional)</span></summary>
+        <label for="reporter-name">Name</label>
+        <input id="reporter-name" name="reporter_name" type="text" maxlength="256" autocomplete="name">
+        <label for="reporter-email">Email</label>
+        <input id="reporter-email" name="reporter_email" type="email" maxlength="256" autocomplete="email">
+      </details>
+      <section class="attachments" aria-labelledby="attachments-title">
+        <div class="section-head">
+          <h2 id="attachments-title">Photos and video</h2>
+          <span id="media-total" class="media-total">0 files</span>
+        </div>
+        <button class="drop-area" id="drop-area" type="button">
+          <span class="drop-title">Drop or paste files here</span>
+          <span class="drop-subtitle">or choose photos and videos</span>
+        </button>
+        <input id="media-input" type="file" accept="image/jpeg,image/png,image/heic,video/*" multiple hidden>
+        <ul id="media-list" class="media-list" aria-label="Selected media"></ul>
+        <p class="limit-note">Photos: JPEG, PNG or HEIC. Videos are supported. WebP and GIF photos are refused because their private metadata cannot be stripped. Up to 100 MB per file and 250 MB per report.</p>
+      </section>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <button id="submit" class="submit" type="submit">Send report</button>
+    </form>
+    <section id="receipt" class="receipt" aria-live="polite" hidden>
+      <span class="eyebrow">RECEIPT</span>
+      <h2>Report received</h2>
+      <dl id="receipt-fields"></dl>
+      <button id="another" class="secondary" type="button">File another report</button>
+    </section>
+    <p class="privacy-note">This form does not show or search the project board.</p>
+  </main>
+</body>
+</html>

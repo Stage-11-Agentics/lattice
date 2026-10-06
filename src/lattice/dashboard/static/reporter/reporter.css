@@ -1,0 +1,115 @@
+:root {
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #182127;
+  background: #f2f5f4;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 320px;
+  padding: 24px 14px 40px;
+  background: radial-gradient(ellipse at top, #e4eeeb, #f4f6f5 52%);
+}
+
+.report-card {
+  width: min(100%, 590px);
+  margin: 0 auto;
+  padding: clamp(20px, 5vw, 36px);
+  border: 1px solid #d9e1de;
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 14px 44px #203a3212;
+}
+
+.eyebrow {
+  display: inline-block;
+  color: #426b60;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: .13em;
+}
+
+h1 { margin: 9px 0 8px; font-size: clamp(26px, 7vw, 34px); letter-spacing: -.035em; }
+.report-head p, .privacy-note { color: #65716d; line-height: 1.5; }
+.report-head p { margin: 0 0 28px; }
+
+form { display: grid; gap: 10px; }
+form[hidden] { display: none; }
+label { margin-top: 7px; font-size: 13px; font-weight: 700; }
+label span { color: #bf493d; }
+input, textarea {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid #cbd5d1;
+  border-radius: 11px;
+  padding: 12px 13px;
+  color: #182127;
+  background: #fff;
+  font: inherit;
+  font-size: 16px;
+}
+textarea { min-height: 124px; resize: vertical; line-height: 1.45; }
+input:focus, textarea:focus, button:focus-visible, summary:focus-visible {
+  outline: 3px solid #75b7a2;
+  outline-offset: 2px;
+}
+
+.reporter-details {
+  margin: 7px 0 2px;
+  border: 1px solid #e0e6e3;
+  border-radius: 12px;
+  padding: 12px;
+}
+.reporter-details summary { cursor: pointer; font-size: 14px; font-weight: 700; }
+.reporter-details summary span { color: #687570; font-weight: 400; }
+.reporter-details[open] { display: grid; gap: 8px; }
+
+.attachments { margin-top: 12px; }
+.section-head { display: flex; min-height: 28px; align-items: center; justify-content: space-between; gap: 12px; }
+.section-head h2 { margin: 0; font-size: 16px; }
+.media-total { color: #64716c; font-size: 12px; font-variant-numeric: tabular-nums; }
+.drop-area {
+  display: grid;
+  width: 100%;
+  min-height: 104px;
+  margin-top: 11px;
+  place-content: center;
+  gap: 6px;
+  border: 1px dashed #8aa99d;
+  border-radius: 13px;
+  color: #31594e;
+  background: #f5faf8;
+  cursor: pointer;
+  font: inherit;
+}
+.drop-area.dragging { border-style: solid; background: #e9f5f0; }
+.drop-title { font-weight: 700; }
+.drop-subtitle { color: #6d7975; font-size: 13px; }
+.media-list { display: grid; gap: 7px; min-height: 0; margin: 9px 0 0; padding: 0; list-style: none; }
+.media-list:empty { display: none; }
+.media-row { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; border-radius: 9px; padding: 7px 10px; background: #f3f6f5; }
+.media-name { overflow: hidden; color: #34413c; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.remove-media, .secondary { min-width: 48px; min-height: 36px; border: 1px solid #cbd5d1; border-radius: 9px; color: #294b41; background: #fff; cursor: pointer; font: inherit; font-size: 13px; }
+.limit-note { margin: 8px 0 0; color: #707b77; font-size: 12px; }
+.status { min-height: 24px; margin: 8px 0 0; color: #495a53; font-size: 14px; line-height: 1.45; }
+.status.error { color: #9b322b; }
+.submit { width: 100%; min-height: 50px; border: 0; border-radius: 11px; color: #fff; background: #2c6756; cursor: pointer; font: inherit; font-size: 16px; font-weight: 700; }
+.submit:disabled { cursor: wait; background: #6f9388; }
+.receipt { margin-top: 14px; border: 1px solid #cfe1d9; border-radius: 13px; padding: 18px; background: #f4faf7; }
+.receipt h2 { margin: 7px 0 12px; font-size: 20px; }
+.receipt dl { display: grid; grid-template-columns: minmax(94px, 130px) 1fr; gap: 8px 10px; margin: 0 0 16px; font-size: 13px; }
+.receipt dt { color: #62716a; }
+.receipt dd { overflow-wrap: anywhere; margin: 0; font-variant-numeric: tabular-nums; }
+.privacy-note { margin: 20px 0 0; font-size: 12px; }
+.secondary { min-height: 42px; padding: 0 13px; }
+
+@media (max-width: 390px) {
+  body { padding: 10px 8px 24px; }
+  .report-card { border-radius: 16px; padding: 19px 15px; }
+  .receipt dl { grid-template-columns: 88px minmax(0, 1fr); }
+}

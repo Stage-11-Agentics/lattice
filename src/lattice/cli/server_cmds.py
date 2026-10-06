@@ -122,6 +122,79 @@ def project_group() -> None:
     """Create and administer hosted projects."""
 
 
+@project_group.group("reporter-link")
+def reporter_link_group() -> None:
+    """Create, list, or revoke public issue-report links."""
+
+
+@reporter_link_group.command("create")
+@click.argument("slug")
+@click.option("--label", required=True, help="Reporter label recorded on filed issues.")
+@click.option(
+    "--public-base-url",
+    required=True,
+    help="Externally reachable HTTPS base URL, including any proxy path prefix.",
+)
+@_root_option
+@_json_option
+def reporter_link_create(
+    slug: str, label: str, public_base_url: str, root: str | None, is_json: bool
+) -> None:
+    """Create one public, link-scoped issue filing form."""
+    from lattice.server.reporter_links import create_link
+
+    def render(data: dict) -> str:
+        link = data["link"]
+        return f"Created reporter link {link['id']} for {link['project']} ({link['label']}):\n{data['url']}"
+
+    _run(
+        is_json,
+        lambda: create_link(_root(root), slug, label, public_base_url),
+        render,
+    )
+
+
+@reporter_link_group.command("list")
+@_root_option
+@_json_option
+def reporter_link_list(root: str | None, is_json: bool) -> None:
+    """List reporter links without their URL secrets."""
+    from lattice.server.reporter_links import list_links
+
+    def render(rows: list[dict]) -> str:
+        return (
+            "\n".join(
+                f"{row['id']}  {row['project']}  {row['label']}  {row['public_base_url']}"
+                + ("  revoked" if row["revoked_at"] else "")
+                for row in rows
+            )
+            or "No reporter links."
+        )
+
+    _run(is_json, lambda: list_links(_root(root)), render)
+
+
+@reporter_link_group.command("revoke")
+@click.argument("link_id")
+@_root_option
+@_json_option
+def reporter_link_revoke(link_id: str, root: str | None, is_json: bool) -> None:
+    """Revoke a reporter link and remove its unreferenced staged media."""
+    from lattice.server.reporter_links import revoke_link
+
+    def render(row: dict) -> str:
+        message = f"Revoked reporter link {row['id']} for {row['project']}."
+        if row.get("cleanup") == "pending":
+            message += " Media cleanup is pending until the project is available."
+        return message
+
+    _run(
+        is_json,
+        lambda: revoke_link(_root(root), link_id),
+        render,
+    )
+
+
 @project_group.command("create")
 @click.argument("slug")
 @click.option("--code", default=None, help="Project code for short IDs (e.g. LAT).")

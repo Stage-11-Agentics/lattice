@@ -118,15 +118,17 @@ def is_hosted_api(path: str) -> bool:
 
 def page_headers(path: str, csp: str) -> list[tuple[bytes, bytes]]:
     """The headers SPEC §10 adds outside ``/v1``: ``nosniff`` and the CSP, and
-    ``no-store`` on hosted API responses."""
+    ``no-store`` on hosted API and bearer-secret reporter routes."""
     if path == "/v1" or path.startswith("/v1/"):
         return []
     extra = [
         (b"x-content-type-options", b"nosniff"),
         (b"content-security-policy", csp.encode("ascii")),
     ]
-    if is_hosted_api(path):
+    if is_hosted_api(path) or path == "/r" or path.startswith("/r/"):
         extra.append((b"cache-control", b"no-store"))
+    if path == "/r" or path.startswith("/r/"):
+        extra.append((b"referrer-policy", b"no-referrer"))
     return extra
 
 

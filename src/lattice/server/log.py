@@ -22,10 +22,17 @@ from typing import Any, TextIO
 _LEVELS = {"debug": 10, "info": 20, "warning": 30, "error": 40}
 _TOKEN_RE = re.compile(r"lat_tok_[0-9A-Za-z]+_[A-Za-z0-9_-]+")
 _BEARER_RE = re.compile(r"(?i)bearer\s+\S+")
+_REPORTER_LINK_SECRET_RE = re.compile(r"rpt_[A-Za-z0-9_-]{43}")
+
+
+def redact_reporter_path(path: str) -> str:
+    """Redact the fixed-prefix bearer secret embedded in a reporter URL path."""
+    return _REPORTER_LINK_SECRET_RE.sub("[redacted]", path)
 
 
 def _scrub(value: Any) -> Any:
     if isinstance(value, str):
+        value = _REPORTER_LINK_SECRET_RE.sub("[redacted]", value)
         return _BEARER_RE.sub("Bearer [redacted]", _TOKEN_RE.sub("[redacted]", value))
     if isinstance(value, dict):
         return {k: _scrub(v) for k, v in value.items()}

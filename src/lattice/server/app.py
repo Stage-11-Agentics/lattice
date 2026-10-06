@@ -216,6 +216,9 @@ class HeadersMiddleware:
         path = scope.get("path", "")
         fields = scope.setdefault("state", {}).setdefault("log", {})
         status_holder = {"status": 500}
+        from lattice.server.log import redact_reporter_path
+
+        logged_path = redact_reporter_path(path)
         extra = [
             (HEADER_SERVER_VERSION.encode(), self.state.version.encode()),
             (HEADER_MIN_CLIENT_VERSION.encode(), MIN_CLIENT_VERSION.encode()),
@@ -248,7 +251,7 @@ class HeadersMiddleware:
                     level,
                     "request",
                     method=scope.get("method"),
-                    path=path,
+                    path=logged_path,
                     client=_client_host(scope),
                     status=status_holder["status"],
                     duration_ms=round((time.monotonic() - started) * 1000, 1),
@@ -783,6 +786,43 @@ def pending_op(state: ServerState, key: tuple[str, str, str] | None) -> Iterator
             del state.pending_ops[key]
 
 
+async def _run_authenticated_operation(
+    request: Request,
+    state: ServerState,
+    token: TokenRecord,
+    project: Project,
+    op_name: str,
+    raw: bytes,
+    *,
+    work: Callable[[WriteRequest], Any] | None = None,
+) -> tuple[Any, WriteRequest, dict]:
+    """Parse and execute a write after its transport has authenticated the token.
+
+    The reporter-link surface uses this same parse, pending-op, admission, and
+    transaction path after it has authenticated its server-side link record.
+    ``work`` only changes the worker's lock prelude; it must still execute the
+    supplied write request and must retain link-before-project lock order.
+    """
+    slug = project.slug
+    write, body = parse_envelope(request, state, token, op_name, raw)
+    state.disk.check()
+
+    def default_work(write_request: WriteRequest) -> Any:
+        with project.locked():
+            project.admit()
+            return project.run_write(write_request)
+
+    key = (slug, token.id, write.caller.origin["op_id"]) if body.get("op_id") else None
+    with pending_op(state, key):
+        async with state.registry.admitted(project):
+            outcome = await in_worker(lambda: (work or default_work)(write))
+    log_fields = request.scope["state"]["log"]
+    log_fields["seq"] = outcome.seq
+    if outcome.replayed:
+        log_fields["replayed"] = True
+    return outcome, write, body
+
+
 async def op_request(request: Request, state: ServerState) -> Response:
     slug = request.path_params["slug"]
     op_name = request.path_params["op"]
@@ -803,22 +843,9 @@ async def op_request(request: Request, state: ServerState) -> Response:
             token.id, token.effective_ops_per_minute(state.config.limits.token_ops_per_minute)
         )
         raw = await read_body(request, state, token)
-        write, body = parse_envelope(request, state, token, op_name, raw)
-        state.disk.check()
-
-        def work() -> Any:
-            with project.locked():
-                project.admit()
-                return project.run_write(write)
-
-        # A request without a client op_id has nothing to look up (SPEC §8.4).
-        key = (slug, token.id, write.caller.origin["op_id"]) if body.get("op_id") else None
-        with pending_op(state, key):
-            async with state.registry.admitted(project):
-                outcome = await in_worker(work)
-        log_fields["seq"] = outcome.seq
-        if outcome.replayed:
-            log_fields["replayed"] = True
+        outcome, write, body = await _run_authenticated_operation(
+            request, state, token, project, op_name, raw
+        )
         return envelope_ok(
             {
                 "result": outcome.result_data,
@@ -1535,6 +1562,19 @@ async def not_found(request: Request, state: ServerState) -> Response:
 # ---------------------------------------------------------------------------
 
 
+class _ReporterCatchall:
+    """ASGI endpoint retaining Starlette's unrestricted ``methods=None``."""
+
+    def __init__(self, handler: Callable, state: ServerState) -> None:
+        self.handler = handler
+        self.state = state
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        request = Request(scope, receive)
+        response = await self.handler(request, self.state)
+        await response(scope, receive, send)
+
+
 def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None) -> ASGIApp:
     """The server app for *root*. Starts the prewarm and control poller on startup."""
     import contextlib
@@ -1546,6 +1586,7 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
         logger.propagate = False
 
     state = ServerState(root, config, log or ServerLog(config.log_level))
+    from lattice.server import reporter_links
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):  # noqa: ANN202
@@ -1633,6 +1674,25 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
             "/p/{slug}/api/{path:path}",
             endpoint(dashboard.dashboard_endpoint(dashboard.api_post)),
             methods=["POST"],
+        ),
+        Route(
+            "/r/{secret}/media/{source_ref}/{sha256}",
+            endpoint(reporter_links.media_stage),
+            methods=["PUT"],
+        ),
+        Route("/r/{secret}/submit", endpoint(reporter_links.submit), methods=["POST"]),
+        Route("/r/{secret}/{name}", endpoint(reporter_links.asset), methods=["GET"]),
+        Route("/r/{secret}/", endpoint(reporter_links.page), methods=["GET"]),
+        Route("/r/{secret}", endpoint(reporter_links.redirect), methods=["GET"]),
+        Route(
+            "/r",
+            _ReporterCatchall(reporter_links.missing, state),
+            methods=None,
+        ),
+        Route(
+            "/r/{path:path}",
+            _ReporterCatchall(reporter_links.missing, state),
+            methods=None,
         ),
         Route(
             "/{path:path}", endpoint(not_found), methods=["GET", "POST", "PUT", "DELETE", "PATCH"]
