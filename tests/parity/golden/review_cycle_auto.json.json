@@ -13,74 +13,6 @@
         "locks/"
       ]
     },
-    "archive/events/<ID-1>.jsonl": {
-      "jsonl": [
-        {
-          "actor": "human:parity",
-          "data": {
-            "description": "Why it matters.",
-            "priority": "medium",
-            "short_id": "PAR-1",
-            "status": "backlog",
-            "title": "Planned task",
-            "type": "task"
-          },
-          "id": "<ID-2>",
-          "schema_version": 1,
-          "task_id": "<ID-1>",
-          "ts": "<TS>",
-          "type": "task_created"
-        },
-        {
-          "actor": "human:parity",
-          "data": {},
-          "id": "<ID-5>",
-          "schema_version": 1,
-          "task_id": "<ID-1>",
-          "ts": "<TS>",
-          "type": "task_archived"
-        }
-      ]
-    },
-    "archive/plans/<ID-1>.md": {
-      "lines": [
-        "# Plan",
-        "",
-        "## Approach",
-        "",
-        "- Do the work in one careful pass."
-      ]
-    },
-    "archive/tasks/<ID-1>.json": {
-      "json": {
-        "acceptance_criteria": [],
-        "assigned_to": null,
-        "branch_links": [],
-        "comment_count": 0,
-        "complexity": null,
-        "created_at": "<TS>",
-        "created_by": "human:parity",
-        "custom_fields": {},
-        "description": "Why it matters.",
-        "done_at": null,
-        "evidence_refs": [],
-        "id": "<ID-1>",
-        "last_event_id": "<ID-5>",
-        "last_status_changed_at": "<TS>",
-        "linked_files": [],
-        "priority": "medium",
-        "relationships_out": [],
-        "reopened_count": 0,
-        "schema_version": 1,
-        "short_id": "PAR-1",
-        "status": "backlog",
-        "tags": null,
-        "title": "Planned task",
-        "type": "task",
-        "updated_at": "<TS>",
-        "urgency": null
-      }
-    },
     "config.json": {
       "json": {
         "auto_code_review_on_transition": false,
@@ -89,7 +21,7 @@
         "default_priority": "medium",
         "default_status": "backlog",
         "done_display": "grouped",
-        "instance_id": "<ID-6>",
+        "instance_id": "<ID-8>",
         "plan_approval": "auto",
         "plan_review_mode": "single",
         "project_code": "PAR",
@@ -129,6 +61,7 @@
             "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
             "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
           },
+          "review_cycle_limit": 1,
           "roles": [
             "review",
             "plan-review",
@@ -243,35 +176,15 @@
         "     can orient immediately. -->"
       ]
     },
-    "events/<ID-3>.jsonl": {
+    "events/<ID-1>.jsonl": {
       "jsonl": [
         {
           "actor": "human:parity",
           "data": {
-            "priority": "medium",
-            "short_id": "PAR-2",
-            "status": "backlog",
-            "title": "Planless task",
-            "type": "task"
-          },
-          "id": "<ID-4>",
-          "schema_version": 1,
-          "task_id": "<ID-3>",
-          "ts": "<TS>",
-          "type": "task_created"
-        }
-      ]
-    },
-    "events/_lifecycle.jsonl": {
-      "jsonl": [
-        {
-          "actor": "human:parity",
-          "data": {
-            "description": "Why it matters.",
             "priority": "medium",
             "short_id": "PAR-1",
             "status": "backlog",
-            "title": "Planned task",
+            "title": "Auto-reviewed task",
             "type": "task"
           },
           "id": "<ID-2>",
@@ -283,45 +196,178 @@
         {
           "actor": "human:parity",
           "data": {
-            "priority": "medium",
-            "short_id": "PAR-2",
-            "status": "backlog",
-            "title": "Planless task",
-            "type": "task"
+            "from": null,
+            "to": "human:parity"
           },
-          "id": "<ID-4>",
+          "id": "<ID-9>",
           "schema_version": 1,
-          "task_id": "<ID-3>",
+          "task_id": "<ID-1>",
           "ts": "<TS>",
-          "type": "task_created"
+          "type": "assignment_changed"
         },
         {
           "actor": "human:parity",
-          "data": {},
+          "data": {
+            "force": true,
+            "from": "backlog",
+            "reason": "straight to work",
+            "to": "in_progress"
+          },
+          "id": "<ID-3>",
+          "provenance": {
+            "reason": "straight to work"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "in_progress",
+            "to": "review"
+          },
+          "id": "<ID-4>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:lattice-auto-review",
+          "data": {
+            "log_path": ".lattice/.daemon/auto-code-review.log",
+            "mode": "single",
+            "pid": 1,
+            "review_type": "code-review",
+            "spawned_at": "<TS>",
+            "trigger_status_event_id": "<ID-4>"
+          },
+          "id": "<ID-10>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "auto_review_spawned"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "review",
+            "review_cycle": {
+              "cycle": 1,
+              "enforced": true,
+              "limit": 1,
+              "over_limit": false
+            },
+            "to": "in_progress"
+          },
           "id": "<ID-5>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
-          "type": "task_archived"
+          "type": "status_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "in_progress",
+            "to": "review"
+          },
+          "id": "<ID-6>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:lattice-auto-review",
+          "data": {
+            "log_path": ".lattice/.daemon/auto-code-review.log",
+            "mode": "single",
+            "pid": 1,
+            "review_type": "code-review",
+            "spawned_at": "<TS>",
+            "trigger_status_event_id": "<ID-6>"
+          },
+          "id": "<ID-11>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "auto_review_spawned"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "force": true,
+            "from": "review",
+            "reason": "exceptional",
+            "review_cycle": {
+              "cycle": 2,
+              "enforced": true,
+              "limit": 1,
+              "over_limit": true
+            },
+            "to": "in_progress"
+          },
+          "id": "<ID-7>",
+          "provenance": {
+            "reason": "exceptional"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        }
+      ]
+    },
+    "events/_lifecycle.jsonl": {
+      "jsonl": [
+        {
+          "actor": "human:parity",
+          "data": {
+            "priority": "medium",
+            "short_id": "PAR-1",
+            "status": "backlog",
+            "title": "Auto-reviewed task",
+            "type": "task"
+          },
+          "id": "<ID-2>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "task_created"
         }
       ]
     },
     "ids.json": {
       "json": {
         "map": {
-          "PAR-1": "<ID-1>",
-          "PAR-2": "<ID-3>"
+          "PAR-1": "<ID-1>"
         },
         "next_seqs": {
-          "PAR": 3
+          "PAR": 2
         },
         "schema_version": 2
       }
     },
-    "tasks/<ID-3>.json": {
+    "plans/<ID-1>.md": {
+      "lines": [
+        "# Plan",
+        "",
+        "## Approach",
+        "",
+        "- Do the work in one careful pass.",
+        "",
+        "## Reset 2100-01-01 by human:parity",
+        "",
+        "## Reset 2100-01-01 by human:parity"
+      ]
+    },
+    "tasks/<ID-1>.json": {
       "json": {
         "acceptance_criteria": [],
-        "assigned_to": null,
+        "assigned_to": "human:parity",
         "branch_links": [],
         "comment_count": 0,
         "complexity": null,
@@ -331,27 +377,27 @@
         "description": null,
         "done_at": null,
         "evidence_refs": [],
-        "id": "<ID-3>",
-        "last_event_id": "<ID-4>",
+        "id": "<ID-1>",
+        "last_event_id": "<ID-7>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
         "relationships_out": [],
-        "reopened_count": 0,
+        "reopened_count": 2,
         "schema_version": 1,
-        "short_id": "PAR-2",
-        "status": "backlog",
+        "short_id": "PAR-1",
+        "status": "in_progress",
         "tags": null,
-        "title": "Planless task",
+        "title": "Auto-reviewed task",
         "type": "task",
         "updated_at": "<TS>",
         "urgency": null
       }
     }
   },
-  "description": "the legacy plan read (lattice plan <task>), recorded before plan became a group",
+  "description": "the review-cycle limit refuses rework only of a review Lattice auto-fired",
   "mode": "json",
-  "scenario": "plan_read",
+  "scenario": "review_cycle_auto",
   "steps": [
     {
       "args": [
@@ -383,186 +429,7 @@
     {
       "args": [
         "create",
-        "Planned task",
-        "--description",
-        "Why it matters.",
-        "--actor",
-        "human:parity",
-        "--json"
-      ],
-      "exit_code": 0,
-      "stderr": {
-        "lines": []
-      },
-      "stdout": {
-        "json": {
-          "data": {
-            "acceptance_criteria": [],
-            "assigned_to": null,
-            "branch_links": [],
-            "comment_count": 0,
-            "complexity": null,
-            "created_at": "<TS>",
-            "created_by": "human:parity",
-            "custom_fields": {},
-            "description": "Why it matters.",
-            "done_at": null,
-            "evidence_refs": [],
-            "id": "<ID-1>",
-            "last_event_id": "<ID-2>",
-            "last_status_changed_at": "<TS>",
-            "linked_files": [],
-            "priority": "medium",
-            "relationships_out": [],
-            "reopened_count": 0,
-            "schema_version": 1,
-            "short_id": "PAR-1",
-            "status": "backlog",
-            "tags": null,
-            "title": "Planned task",
-            "type": "task",
-            "updated_at": "<TS>",
-            "urgency": null
-          },
-          "ok": true
-        }
-      }
-    },
-    {
-      "args": [
-        "plan",
-        "PAR-1",
-        "--json"
-      ],
-      "exit_code": 0,
-      "stderr": {
-        "lines": []
-      },
-      "stdout": {
-        "json": {
-          "data": {
-            "archived": false,
-            "content": "# PAR-1: Planned task\n\nWhy it matters.\n",
-            "plan_path": "<ROOT>/.lattice/plans/<ID-1>.md",
-            "task_id": "<ID-1>"
-          },
-          "ok": true
-        }
-      }
-    },
-    {
-      "write_file": ".lattice/plans/<ID-1>.md"
-    },
-    {
-      "args": [
-        "plan",
-        "PAR-1",
-        "--json"
-      ],
-      "exit_code": 0,
-      "stderr": {
-        "lines": []
-      },
-      "stdout": {
-        "json": {
-          "data": {
-            "archived": false,
-            "content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
-            "plan_path": "<ROOT>/.lattice/plans/<ID-1>.md",
-            "task_id": "<ID-1>"
-          },
-          "ok": true
-        }
-      }
-    },
-    {
-      "args": [
-        "plan",
-        "<ID-1>",
-        "--json"
-      ],
-      "exit_code": 0,
-      "stderr": {
-        "lines": []
-      },
-      "stdout": {
-        "json": {
-          "data": {
-            "archived": false,
-            "content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
-            "plan_path": "<ROOT>/.lattice/plans/<ID-1>.md",
-            "task_id": "<ID-1>"
-          },
-          "ok": true
-        }
-      }
-    },
-    {
-      "args": [
-        "plan",
-        "par-1",
-        "--json"
-      ],
-      "exit_code": 0,
-      "stderr": {
-        "lines": []
-      },
-      "stdout": {
-        "json": {
-          "data": {
-            "archived": false,
-            "content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
-            "plan_path": "<ROOT>/.lattice/plans/<ID-1>.md",
-            "task_id": "<ID-1>"
-          },
-          "ok": true
-        }
-      }
-    },
-    {
-      "args": [
-        "plan",
-        "NOPE-1",
-        "--json"
-      ],
-      "exit_code": 1,
-      "stderr": {
-        "lines": []
-      },
-      "stdout": {
-        "json": {
-          "error": {
-            "code": "NOT_FOUND",
-            "message": "Short ID 'NOPE-1' not found."
-          },
-          "ok": false
-        }
-      }
-    },
-    {
-      "args": [
-        "plan",
-        "not-an-id!",
-        "--json"
-      ],
-      "exit_code": 1,
-      "stderr": {
-        "lines": []
-      },
-      "stdout": {
-        "json": {
-          "error": {
-            "code": "INVALID_ID",
-            "message": "Invalid task ID format: 'not-an-id!'."
-          },
-          "ok": false
-        }
-      }
-    },
-    {
-      "args": [
-        "create",
-        "Planless task",
+        "Auto-reviewed task",
         "--actor",
         "human:parity",
         "--json"
@@ -585,18 +452,18 @@
             "description": null,
             "done_at": null,
             "evidence_refs": [],
-            "id": "<ID-3>",
-            "last_event_id": "<ID-4>",
+            "id": "<ID-1>",
+            "last_event_id": "<ID-2>",
             "last_status_changed_at": "<TS>",
             "linked_files": [],
             "priority": "medium",
             "relationships_out": [],
             "reopened_count": 0,
             "schema_version": 1,
-            "short_id": "PAR-2",
+            "short_id": "PAR-1",
             "status": "backlog",
             "tags": null,
-            "title": "Planless task",
+            "title": "Auto-reviewed task",
             "type": "task",
             "updated_at": "<TS>",
             "urgency": null
@@ -606,32 +473,13 @@
       }
     },
     {
-      "delete_file": ".lattice/plans/<ID-3>.md"
-    },
-    {
       "args": [
-        "plan",
-        "PAR-2",
-        "--json"
-      ],
-      "exit_code": 1,
-      "stderr": {
-        "lines": []
-      },
-      "stdout": {
-        "json": {
-          "error": {
-            "code": "NOT_FOUND",
-            "message": "No plan file found for task <ID-3>."
-          },
-          "ok": false
-        }
-      }
-    },
-    {
-      "args": [
-        "archive",
+        "status",
         "PAR-1",
+        "in_progress",
+        "--force",
+        "--reason",
+        "straight to work",
         "--actor",
         "human:parity",
         "--json"
@@ -643,13 +491,36 @@
       "stdout": {
         "json": {
           "data": {
-            "actor": "human:parity",
-            "data": {},
-            "id": "<ID-5>",
+            "acceptance_criteria": [],
+            "assigned_to": "human:parity",
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-3>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "next_steps": {
+              "action": "implement",
+              "then": "review"
+            },
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
             "schema_version": 1,
-            "task_id": "<ID-1>",
-            "ts": "<TS>",
-            "type": "task_archived"
+            "short_id": "PAR-1",
+            "status": "in_progress",
+            "tags": null,
+            "title": "Auto-reviewed task",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
           },
           "ok": true
         }
@@ -657,8 +528,12 @@
     },
     {
       "args": [
-        "plan",
+        "status",
         "PAR-1",
+        "review",
+        "--no-auto-review",
+        "--actor",
+        "human:parity",
         "--json"
       ],
       "exit_code": 0,
@@ -668,10 +543,105 @@
       "stdout": {
         "json": {
           "data": {
-            "archived": true,
-            "content": "# Plan\n\n## Approach\n\n- Do the work in one careful pass.\n",
-            "plan_path": "<ROOT>/.lattice/archive/plans/<ID-1>.md",
-            "task_id": "<ID-1>"
+            "acceptance_criteria": [],
+            "assigned_to": "human:parity",
+            "auto_review": {
+              "fired": false,
+              "reason": "reviewed_worktree_unavailable"
+            },
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-4>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "next_steps": {
+              "action": "code_review",
+              "command": "lattice code-review PAR-1",
+              "review_mode": "single",
+              "then": "in_validation"
+            },
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 0,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "review",
+            "tags": null,
+            "title": "Auto-reviewed task",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "op": "task.record_auto_review"
+    },
+    {
+      "write_file": ".lattice/plans/<ID-1>.md"
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": "human:parity",
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-5>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "next_steps": {
+              "action": "implement",
+              "then": "review"
+            },
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 1,
+            "review_cycle": {
+              "cycle": 1,
+              "enforced": true,
+              "limit": 1,
+              "over_limit": false
+            },
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "in_progress",
+            "tags": null,
+            "title": "Auto-reviewed task",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
           },
           "ok": true
         }
@@ -679,20 +649,146 @@
     },
     {
       "args": [
-        "plan",
+        "status",
+        "PAR-1",
+        "review",
+        "--no-auto-review",
+        "--actor",
+        "human:parity",
         "--json"
       ],
-      "exit_code": 2,
+      "exit_code": 0,
       "stderr": {
-        "lines": [
-          "Usage: cli plan [OPTIONS] TASK_ID",
-          "Try 'cli plan --help' for help.",
-          "",
-          "Error: Missing argument 'TASK_ID'."
-        ]
+        "lines": []
       },
       "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": "human:parity",
+            "auto_review": {
+              "fired": false,
+              "reason": "reviewed_worktree_unavailable"
+            },
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-6>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "next_steps": {
+              "action": "code_review",
+              "command": "lattice code-review PAR-1",
+              "review_mode": "single",
+              "then": "in_validation"
+            },
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 1,
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "review",
+            "tags": null,
+            "title": "Auto-reviewed task",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
+      }
+    },
+    {
+      "op": "task.record_auto_review"
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 1,
+      "stderr": {
         "lines": []
+      },
+      "stdout": {
+        "json": {
+          "error": {
+            "code": "REVIEW_CYCLE_LIMIT",
+            "message": "Review cycle limit reached (1/1). This task has been sent back from review 1 time(s), and Lattice auto-fired the review being reworked. Flag it for a human instead of cycling further: lattice needs-human <task> \"<what you need>\". Override with --force --reason."
+          },
+          "ok": false
+        }
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--force",
+        "--reason",
+        "exceptional",
+        "--actor",
+        "human:parity",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "json": {
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": "human:parity",
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-7>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "next_steps": {
+              "action": "implement",
+              "then": "review"
+            },
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 2,
+            "review_cycle": {
+              "cycle": 2,
+              "enforced": true,
+              "limit": 1,
+              "over_limit": true
+            },
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "in_progress",
+            "tags": null,
+            "title": "Auto-reviewed task",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
+          },
+          "ok": true
+        }
       }
     }
   ]

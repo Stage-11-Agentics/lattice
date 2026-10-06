@@ -204,6 +204,18 @@ class ParityServer:
         patch = {"default_actor": "human:parity", **config_patch}
         _patch_config(self.board(slug), patch, checkout)
 
+    def op(self, slug: str, name: str, params: dict, actor: str) -> None:
+        """Run one operation on the server as *actor* (an ``Op`` step)."""
+        from lattice.server.testing import http_request
+
+        status, _, body = http_request(
+            "POST",
+            f"{self.url}/v1/projects/{slug}/ops/{name}",
+            token=self.strict_token,
+            body={"params": params, "actor": actor},
+        )
+        assert status == 200, body
+
     def fixture(self, slug: str, rel: str, text: str | None) -> None:
         """Write (or, with ``text=None``, delete) one durable path as the
         ``xtest.parity_fixture`` operation: a journaled server transaction, so sync
@@ -393,6 +405,9 @@ class HostedTarget(LocalTarget):
         assert inner.split("/")[0] in RUNTIME_DIRS, rel
         return False  # machine-local runtime state lives in the checkout's cache
 
+    def op(self, root: Path, name: str, params: dict, actor: str) -> None:
+        self.server.op(self.slug, name, params, actor)
+
 
 # ---------------------------------------------------------------------------
 # Declared hosted differences
@@ -557,6 +572,7 @@ HOSTED_GROUPS: tuple[tuple[str, ...], ...] = (
     (
         "artifacts",
         "review_cycles",
+        "review_cycle_auto",
         "comments",
         "prose_writes",
         "reviews",

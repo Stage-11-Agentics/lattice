@@ -1,7 +1,8 @@
 """``task.complete``: the ``lattice complete`` command's rules.
 
-A review comment, a move to ``review`` (unless already there), a review
-artifact, and a move to ``done``, in one mutation. Everything is validated
+A review comment, a move to ``review`` (unless already there, or the task
+sits past review with a direct edge to ``done``), a review artifact, and a
+move to ``done``, in one mutation. Everything is validated
 before any file is written (SPEC §3.8): the review payload and its metadata
 are written under the task lock only once every rule has passed, just before
 the events that reference them are appended, so a refused completion leaves
@@ -117,10 +118,10 @@ class CompleteParams(CommonParams):
             )
 
 
-def prior_status(result: OpResult) -> str:
-    """The status the task had before ``complete`` moved it (for the summary line)."""
-    first_move = next(e for e in result.events if e["type"] == "status_changed")
-    return first_move["data"]["from"]
+def completion_path(result: OpResult) -> str:
+    """The statuses ``complete`` moved the task through, as ``a -> b -> done``."""
+    moves = [e["data"] for e in result.events if e["type"] == "status_changed"]
+    return " -> ".join([moves[0]["from"], *(m["to"] for m in moves)])
 
 
 @operation("task.complete")
@@ -137,11 +138,6 @@ class Complete:
         text = p.review if p.review is not None else p.review_file
         assert text is not None
         task_id = ctx.resolve_task(p.task)
-        if not validate_transition(config, "review", "done"):
-            raise OpError(
-                "INVALID_TRANSITION",
-                "Cannot complete: no transition from review to done in workflow.",
-            )
         configured_roles = get_configured_roles(config)
         if configured_roles and "review" not in configured_roles:
             raise OpError(
@@ -228,8 +224,18 @@ class Complete:
                     f"status '{current_status}'.",
                     snapshot,
                 )
-            needs_force = not already_in_review and not validate_transition(
-                config, current_status, "review"
+            # A status past review (in_validation after a merge-first flow)
+            # closes directly when the workflow allows it; otherwise the
+            # completion goes through review and needs the review -> done edge.
+            direct_to_done = (
+                not already_in_review
+                and not validate_transition(config, current_status, "review")
+                and validate_transition(config, current_status, "done")
+            )
+            needs_force = (
+                not already_in_review
+                and not direct_to_done
+                and not validate_transition(config, current_status, "review")
             )
             if needs_force and p.via is None:
                 valid_targets = get_valid_transitions(config, current_status)
@@ -240,8 +246,14 @@ class Complete:
                     f"transition to review. Valid transitions: {valid_list}.",
                     snapshot,
                 )
+            if not direct_to_done and not validate_transition(config, "review", "done"):
+                raise OpError.task_state(
+                    "INVALID_TRANSITION",
+                    "Cannot complete: no transition from review to done in workflow.",
+                    snapshot,
+                )
             events = [event("comment_added", {"body": review_text, "role": "review"})]
-            if not already_in_review:
+            if not already_in_review and not direct_to_done:
                 move_data: dict = {"from": current_status, "to": "review"}
                 if needs_force:
                     assert bundle_label is not None
@@ -268,7 +280,10 @@ class Complete:
                     f"Completion policy not satisfied: {'; '.join(policy_failures)}.",
                     snapshot,
                 )
-            done_data: dict = {"from": "review", "to": "done"}
+            done_data: dict = {
+                "from": current_status if direct_to_done else "review",
+                "to": "done",
+            }
             if bundle_event is not None:
                 done_data["via"] = bundle_event
             if attested is not None:

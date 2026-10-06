@@ -1,4 +1,4 @@
-"""Tests for `lattice migrate needs-human` (LAT-232)."""
+"""Tests for `lattice migrate needs-human` (LAT-232) and `migrate validation-done`."""
 
 from __future__ import annotations
 
@@ -125,3 +125,32 @@ class TestMigrateNeedsHuman:
         r = invoke("migrate", "needs-human")
         assert r.exit_code == 0
         assert "Nothing to migrate" in r.output
+
+
+class TestMigrateValidationDone:
+    def _drop_edge(self, initialized_root) -> None:
+        config_path = initialized_root / ".lattice" / "config.json"
+        config = json.loads(config_path.read_text())
+        config["workflow"]["transitions"]["in_validation"].remove("done")
+        config_path.write_text(json.dumps(config, sort_keys=True, indent=2) + "\n")
+
+    def test_adds_done_after_pr_open(self, invoke, initialized_root) -> None:
+        self._drop_edge(initialized_root)
+        r = invoke("migrate", "validation-done", "--json")
+        assert r.exit_code == 0, r.output
+        assert json.loads(r.output)["data"]["changed"] is True
+        targets = _read_config(initialized_root)["workflow"]["transitions"]["in_validation"]
+        assert targets[:2] == ["pr_open", "done"]
+
+    def test_dry_run_writes_nothing(self, invoke, initialized_root) -> None:
+        self._drop_edge(initialized_root)
+        r = invoke("migrate", "validation-done", "--dry-run", "--json")
+        assert json.loads(r.output)["data"]["changed"] is True
+        targets = _read_config(initialized_root)["workflow"]["transitions"]["in_validation"]
+        assert "done" not in targets
+
+    def test_idempotent(self, invoke, initialized_root) -> None:
+        r = invoke("migrate", "validation-done", "--json")
+        assert json.loads(r.output)["data"]["changed"] is False
+        targets = _read_config(initialized_root)["workflow"]["transitions"]["in_validation"]
+        assert targets.count("done") == 1

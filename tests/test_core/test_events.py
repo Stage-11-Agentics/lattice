@@ -9,6 +9,7 @@ from lattice.core.events import (
     ISSUE_EVENT_TYPES,
     LIFECYCLE_EVENT_TYPES,
     count_review_rework_cycles,
+    latest_review_auto_fired,
     create_event,
     serialize_event,
     validate_custom_event_type,
@@ -492,3 +493,35 @@ class TestCountReviewReworkCycles:
             _status_event("in_validation", "pr_open"),
         ]
         assert count_review_rework_cycles(events) == 0
+
+
+# ---------------------------------------------------------------------------
+# latest_review_auto_fired
+# ---------------------------------------------------------------------------
+
+
+def _review_entry(event_id: str) -> dict:
+    return {
+        "id": event_id,
+        "type": "status_changed",
+        "data": {"from": "in_progress", "to": "review"},
+    }
+
+
+def _auto_spawn(trigger_id: str) -> dict:
+    return {"type": "auto_review_spawned", "data": {"trigger_status_event_id": trigger_id}}
+
+
+class TestLatestReviewAutoFired:
+    def test_never_in_review(self) -> None:
+        assert latest_review_auto_fired([]) is False
+
+    def test_latest_entry_auto_fired(self) -> None:
+        assert latest_review_auto_fired([_review_entry("ev_1"), _auto_spawn("ev_1")]) is True
+
+    def test_only_an_earlier_entry_auto_fired(self) -> None:
+        events = [_review_entry("ev_1"), _auto_spawn("ev_1"), _review_entry("ev_2")]
+        assert latest_review_auto_fired(events) is False
+
+    def test_latest_entry_without_spawn(self) -> None:
+        assert latest_review_auto_fired([_review_entry("ev_1")]) is False

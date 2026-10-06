@@ -13,32 +13,6 @@
         "locks/"
       ]
     },
-    "artifacts/meta/<ID-3>.json": {
-      "json": {
-        "created_at": "<TS>",
-        "created_by": "agent:worker",
-        "custom_fields": {},
-        "id": "<ID-3>",
-        "model": null,
-        "payload": {
-          "content_type": "text/markdown",
-          "file": "<ID-3>.md",
-          "size_bytes": 31
-        },
-        "schema_version": 1,
-        "sensitive": false,
-        "summary": "Reviewed in the primary change.",
-        "tags": [],
-        "title": "Review findings",
-        "token_usage": null,
-        "type": "note"
-      }
-    },
-    "artifacts/payload/<ID-3>.md": {
-      "lines": [
-        "Reviewed in the primary change."
-      ]
-    },
     "config.json": {
       "json": {
         "auto_code_review_on_transition": false,
@@ -47,7 +21,7 @@
         "default_priority": "medium",
         "default_status": "backlog",
         "done_display": "grouped",
-        "instance_id": "<ID-4>",
+        "instance_id": "<ID-2>",
         "plan_approval": "auto",
         "plan_review_mode": "single",
         "project_code": "PAR",
@@ -87,6 +61,7 @@
             "pr_open": "PR is open and awaiting human review, CI, or merge. Local review and validation artifacts are recorded.",
             "review": "Local review is underway. A review sub-agent is examining the diff before validation begins."
           },
+          "review_cycle_limit": 1,
           "roles": [
             "review",
             "plan-review",
@@ -209,86 +184,138 @@
             "priority": "medium",
             "short_id": "PAR-1",
             "status": "backlog",
-            "title": "Primary bundle task",
+            "title": "Auto-reviewed task",
             "type": "task"
           },
-          "id": "<ID-5>",
+          "id": "<ID-3>",
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
           "type": "task_created"
-        }
-      ]
-    },
-    "events/<ID-2>.jsonl": {
-      "jsonl": [
+        },
         {
           "actor": "human:parity",
           "data": {
-            "priority": "medium",
-            "short_id": "PAR-2",
-            "status": "backlog",
-            "title": "Bundled implementation",
-            "type": "task"
+            "from": null,
+            "to": "human:parity"
           },
-          "id": "<ID-6>",
+          "id": "<ID-4>",
           "schema_version": 1,
-          "task_id": "<ID-2>",
+          "task_id": "<ID-1>",
           "ts": "<TS>",
-          "type": "task_created"
+          "type": "assignment_changed"
         },
         {
-          "actor": "agent:worker",
-          "data": {
-            "body": "Reviewed in the primary change.",
-            "role": "review"
-          },
-          "id": "<ID-7>",
-          "schema_version": 1,
-          "task_id": "<ID-2>",
-          "ts": "<TS>",
-          "type": "comment_added"
-        },
-        {
-          "actor": "agent:worker",
+          "actor": "human:parity",
           "data": {
             "force": true,
             "from": "backlog",
-            "reason": "Complete through bundle PAR-1.",
-            "to": "review"
+            "reason": "straight to work",
+            "to": "in_progress"
           },
-          "id": "<ID-8>",
+          "id": "<ID-5>",
+          "provenance": {
+            "reason": "straight to work"
+          },
           "schema_version": 1,
-          "task_id": "<ID-2>",
+          "task_id": "<ID-1>",
           "ts": "<TS>",
           "type": "status_changed"
         },
         {
-          "actor": "agent:worker",
+          "actor": "human:parity",
           "data": {
-            "artifact_id": "<ID-3>",
-            "role": "review"
+            "from": "in_progress",
+            "to": "review"
+          },
+          "id": "<ID-6>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "agent:lattice-auto-review",
+          "data": {
+            "log_path": ".lattice/.daemon/auto-code-review.log",
+            "mode": "single",
+            "pid": 1,
+            "review_type": "code-review",
+            "spawned_at": "<TS>",
+            "trigger_status_event_id": "<ID-6>"
+          },
+          "id": "<ID-7>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "auto_review_spawned"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "review",
+            "review_cycle": {
+              "cycle": 1,
+              "enforced": true,
+              "limit": 1,
+              "over_limit": false
+            },
+            "to": "in_progress"
+          },
+          "id": "<ID-8>",
+          "schema_version": 1,
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "status_changed"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "from": "in_progress",
+            "to": "review"
           },
           "id": "<ID-9>",
           "schema_version": 1,
-          "task_id": "<ID-2>",
+          "task_id": "<ID-1>",
           "ts": "<TS>",
-          "type": "artifact_attached"
+          "type": "status_changed"
         },
         {
-          "actor": "agent:worker",
+          "actor": "agent:lattice-auto-review",
           "data": {
-            "from": "review",
-            "to": "done",
-            "via": {
-              "id": "<ID-1>",
-              "kind": "task",
-              "short_id": "PAR-1"
-            }
+            "log_path": ".lattice/.daemon/auto-code-review.log",
+            "mode": "single",
+            "pid": 1,
+            "review_type": "code-review",
+            "spawned_at": "<TS>",
+            "trigger_status_event_id": "<ID-9>"
           },
           "id": "<ID-10>",
           "schema_version": 1,
-          "task_id": "<ID-2>",
+          "task_id": "<ID-1>",
+          "ts": "<TS>",
+          "type": "auto_review_spawned"
+        },
+        {
+          "actor": "human:parity",
+          "data": {
+            "force": true,
+            "from": "review",
+            "reason": "exceptional",
+            "review_cycle": {
+              "cycle": 2,
+              "enforced": true,
+              "limit": 1,
+              "over_limit": true
+            },
+            "to": "in_progress"
+          },
+          "id": "<ID-11>",
+          "provenance": {
+            "reason": "exceptional"
+          },
+          "schema_version": 1,
+          "task_id": "<ID-1>",
           "ts": "<TS>",
           "type": "status_changed"
         }
@@ -302,27 +329,12 @@
             "priority": "medium",
             "short_id": "PAR-1",
             "status": "backlog",
-            "title": "Primary bundle task",
+            "title": "Auto-reviewed task",
             "type": "task"
           },
-          "id": "<ID-5>",
+          "id": "<ID-3>",
           "schema_version": 1,
           "task_id": "<ID-1>",
-          "ts": "<TS>",
-          "type": "task_created"
-        },
-        {
-          "actor": "human:parity",
-          "data": {
-            "priority": "medium",
-            "short_id": "PAR-2",
-            "status": "backlog",
-            "title": "Bundled implementation",
-            "type": "task"
-          },
-          "id": "<ID-6>",
-          "schema_version": 1,
-          "task_id": "<ID-2>",
           "ts": "<TS>",
           "type": "task_created"
         }
@@ -331,29 +343,31 @@
     "ids.json": {
       "json": {
         "map": {
-          "PAR-1": "<ID-1>",
-          "PAR-2": "<ID-2>"
+          "PAR-1": "<ID-1>"
         },
         "next_seqs": {
-          "PAR": 3
+          "PAR": 2
         },
         "schema_version": 2
       }
     },
     "plans/<ID-1>.md": {
       "lines": [
-        "# PAR-1: Primary bundle task"
-      ]
-    },
-    "plans/<ID-2>.md": {
-      "lines": [
-        "# PAR-2: Bundled implementation"
+        "# Plan",
+        "",
+        "## Approach",
+        "",
+        "- Do the work in one careful pass.",
+        "",
+        "## Reset 2100-01-01 by human:parity",
+        "",
+        "## Reset 2100-01-01 by human:parity"
       ]
     },
     "tasks/<ID-1>.json": {
       "json": {
         "acceptance_criteria": [],
-        "assigned_to": null,
+        "assigned_to": "human:parity",
         "branch_links": [],
         "comment_count": 0,
         "complexity": null,
@@ -364,67 +378,26 @@
         "done_at": null,
         "evidence_refs": [],
         "id": "<ID-1>",
-        "last_event_id": "<ID-5>",
+        "last_event_id": "<ID-11>",
         "last_status_changed_at": "<TS>",
         "linked_files": [],
         "priority": "medium",
         "relationships_out": [],
-        "reopened_count": 0,
+        "reopened_count": 2,
         "schema_version": 1,
         "short_id": "PAR-1",
-        "status": "backlog",
+        "status": "in_progress",
         "tags": null,
-        "title": "Primary bundle task",
-        "type": "task",
-        "updated_at": "<TS>",
-        "urgency": null
-      }
-    },
-    "tasks/<ID-2>.json": {
-      "json": {
-        "acceptance_criteria": [],
-        "assigned_to": null,
-        "branch_links": [],
-        "comment_count": 1,
-        "complexity": null,
-        "created_at": "<TS>",
-        "created_by": "human:parity",
-        "custom_fields": {},
-        "description": null,
-        "done_at": "<TS>",
-        "evidence_refs": [
-          {
-            "id": "<ID-7>",
-            "role": "review",
-            "source_type": "comment"
-          },
-          {
-            "id": "<ID-3>",
-            "role": "review",
-            "source_type": "artifact"
-          }
-        ],
-        "id": "<ID-2>",
-        "last_event_id": "<ID-10>",
-        "last_status_changed_at": "<TS>",
-        "linked_files": [],
-        "priority": "medium",
-        "relationships_out": [],
-        "reopened_count": 0,
-        "schema_version": 1,
-        "short_id": "PAR-2",
-        "status": "done",
-        "tags": null,
-        "title": "Bundled implementation",
+        "title": "Auto-reviewed task",
         "type": "task",
         "updated_at": "<TS>",
         "urgency": null
       }
     }
   },
-  "description": "complete a bundled task with canonical bundle provenance",
+  "description": "the review-cycle limit refuses rework only of a review Lattice auto-fired",
   "mode": "plain",
-  "scenario": "complete_via",
+  "scenario": "review_cycle_auto",
   "steps": [
     {
       "args": [
@@ -456,7 +429,7 @@
     {
       "args": [
         "create",
-        "Primary bundle task",
+        "Auto-reviewed task",
         "--actor",
         "human:parity"
       ],
@@ -466,39 +439,21 @@
       },
       "stdout": {
         "lines": [
-          "Created task PAR-1 (<ID-1>) \"Primary bundle task\"",
+          "Created task PAR-1 (<ID-1>) \"Auto-reviewed task\"",
           "  status: backlog  priority: medium  type: task"
         ]
       }
     },
     {
       "args": [
-        "create",
-        "Bundled implementation",
-        "--actor",
-        "human:parity"
-      ],
-      "exit_code": 0,
-      "stderr": {
-        "lines": []
-      },
-      "stdout": {
-        "lines": [
-          "Created task PAR-2 (<ID-2>) \"Bundled implementation\"",
-          "  status: backlog  priority: medium  type: task"
-        ]
-      }
-    },
-    {
-      "args": [
-        "complete",
-        "PAR-2",
-        "--review",
-        "Reviewed in the primary change.",
-        "--via",
+        "status",
         "PAR-1",
+        "in_progress",
+        "--force",
+        "--reason",
+        "straight to work",
         "--actor",
-        "agent:worker"
+        "human:parity"
       ],
       "exit_code": 0,
       "stderr": {
@@ -506,7 +461,116 @@
       },
       "stdout": {
         "lines": [
-          "Completed PAR-2 via PAR-1: 4 events (backlog -> review -> done)"
+          "Status: backlog -> in_progress (PAR-1)  (auto-assigned to human:parity)",
+          "  Next: implement the plan, then move to review."
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "review",
+        "--no-auto-review",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: in_progress -> review (PAR-1)",
+          "  Next: run 'lattice code-review PAR-1' (review_mode: single) before moving to in_validation. (auto-review skipped (reviewed_worktree_unavailable))"
+        ]
+      }
+    },
+    {
+      "op": "task.record_auto_review"
+    },
+    {
+      "write_file": ".lattice/plans/<ID-1>.md"
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: review -> in_progress (PAR-1)",
+          "  Next: implement the plan, then move to review."
+        ]
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "review",
+        "--no-auto-review",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: in_progress -> review (PAR-1)",
+          "  Next: run 'lattice code-review PAR-1' (review_mode: single) before moving to in_validation. (auto-review skipped (reviewed_worktree_unavailable))"
+        ]
+      }
+    },
+    {
+      "op": "task.record_auto_review"
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 1,
+      "stderr": {
+        "lines": [
+          "Error: Review cycle limit reached (1/1). This task has been sent back from review 1 time(s), and Lattice auto-fired the review being reworked. Flag it for a human instead of cycling further: lattice needs-human <task> \"<what you need>\". Override with --force --reason."
+        ]
+      },
+      "stdout": {
+        "lines": []
+      }
+    },
+    {
+      "args": [
+        "status",
+        "PAR-1",
+        "in_progress",
+        "--force",
+        "--reason",
+        "exceptional",
+        "--actor",
+        "human:parity"
+      ],
+      "exit_code": 0,
+      "stderr": {
+        "lines": []
+      },
+      "stdout": {
+        "lines": [
+          "Status: review -> in_progress (PAR-1)",
+          "  Next: implement the plan, then move to review."
         ]
       }
     }

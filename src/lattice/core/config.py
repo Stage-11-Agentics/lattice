@@ -289,8 +289,9 @@ def stage11_workflow() -> dict:
 
     This is a hand-tuned literal — the transition graph carries deliberate
     skip-forward edges (``backlog → planned``, ``planned → review``,
-    ``review → pr_open/done``, ``pr_open → review``) that no clean derivation
-    rule reproduces.  Do not re-express it through :func:`compose_workflow`.
+    ``review → pr_open/done``, ``in_validation → done``, ``pr_open → review``)
+    that no clean derivation rule reproduces.  Do not re-express it through
+    :func:`compose_workflow`.
     """
     statuses = [
         "backlog",
@@ -321,6 +322,7 @@ def stage11_workflow() -> dict:
             ],
             "in_validation": [
                 "pr_open",
+                "done",
                 "in_progress",
                 "in_planning",
                 "blocked",
@@ -416,6 +418,9 @@ def compose_workflow(
         status: [chain[i + 1]] for i, status in enumerate(chain[:-1])
     }
     transitions["done"] = []
+    # Validation can close a task whose PR already merged, without reopening one.
+    if include_validation and include_pr_open:
+        transitions["in_validation"].append("done")
 
     # Rework edges mirroring stage11: gates route back to in_progress, and
     # review/in_validation additionally to in_planning.

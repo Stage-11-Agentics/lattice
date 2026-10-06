@@ -314,6 +314,28 @@ def count_review_rework_cycles(events: list[dict]) -> int:
     return count
 
 
+def latest_review_auto_fired(events: list[dict]) -> bool:
+    """Whether Lattice auto-fired the code review for the task's latest entry into review.
+
+    True when an ``auto_review_spawned`` event names the most recent
+    ``status_changed -> review`` event as its trigger.  This is the only
+    review loop Lattice drives itself, so it is the only one the review-cycle
+    limit hard-stops; reviews an orchestrator or agent runs are bounded by
+    whoever runs them.
+    """
+    latest_review_id = None
+    for event in events:
+        if event.get("type") == "status_changed" and event.get("data", {}).get("to") == "review":
+            latest_review_id = event.get("id")
+    if latest_review_id is None:
+        return False
+    return any(
+        event.get("type") == "auto_review_spawned"
+        and event.get("data", {}).get("trigger_status_event_id") == latest_review_id
+        for event in events
+    )
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

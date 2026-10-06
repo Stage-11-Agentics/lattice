@@ -343,7 +343,7 @@ When a review agent evaluates work, it produces one of three outcomes:
 | Route to in_progress vs in_planning | Orchestrator | Follows review agent's recommendation |
 | Whether to spawn fresh sub-agent | Orchestrator | Encouraged by convention, not enforced |
 
-**3-cycle safety valve:** After 3 review-to-rework transitions (any combination of `review -> in_progress` and `review -> in_planning`), the CLI blocks the 4th attempt. The error message instructs the agent to set the `needs-human` flag (`lattice needs-human <task> "<situation>"`) and stop. The limit is configurable via `review_cycle_limit` in the workflow config (default: 3). Override with `--force --reason` for genuinely exceptional cases.
+**Review-cycle limit:** Every review-to-rework transition (`review`, `in_validation` or `pr_open` -> `in_progress` or `in_planning`) records its cycle number on the status event. Past the limit (`review_cycle_limit` in the workflow config, default: 3), Lattice refuses the transition (from the CLI, MCP, the dashboard or a hosted server) only when Lattice auto-fired the review being reworked; the error instructs the agent to set the `needs-human` flag (`lattice needs-human <task> "<situation>"`) and stop. When an orchestrator or agent runs its own reviews, passing the limit is recorded (and the CLI warns), and the transition goes through. Override a refusal with `--force --reason` for genuinely exceptional cases.
 
 **Allowed lifecycle paths:**
 
@@ -352,7 +352,8 @@ Normal:       in_progress -> review -> done
 Minor fix:    in_progress -> review -> (fix inline) -> done
 1 impl rework: in_progress -> review -> in_progress -> review -> done
 1 plan rework: in_progress -> review -> in_planning -> planned -> in_progress -> review -> done
-Max cycles:   3 review->rework transitions, then CLI blocks -> set needs-human flag
+Merge-first:  in_progress -> review -> (PR merged) -> in_validation -> done
+Max cycles:   3 reworks of an auto-fired review, then CLI blocks -> set needs-human flag
 ```
 
 ### Review Config Reference

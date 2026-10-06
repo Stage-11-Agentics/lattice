@@ -73,9 +73,11 @@ Operational implication:
 
 ## Rework/Review Signals
 
-`count_review_rework_cycles()` scans task events for `review -> in_progress` and
-`review -> in_planning` transitions. This powers the review-cycle safety valve
-in status transitions.
+`count_review_rework_cycles()` scans task events for transitions from `review`,
+`in_validation` or `pr_open` to `in_progress` or `in_planning`. Each such
+transition records `review_cycle` on its event. `latest_review_auto_fired()`
+decides whether the limit is enforced: only when Lattice auto-fired the review
+for the latest entry into `review`.
 
 ## Hooks
 

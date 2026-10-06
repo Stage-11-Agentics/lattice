@@ -1,4 +1,4 @@
-"""Migration commands: backfill-ids."""
+"""Migration commands: backfill-ids, migrate needs-human, migrate validation-done."""
 
 from __future__ import annotations
 
@@ -383,3 +383,42 @@ def migrate_needs_human(
         click.echo(f"{prefix}{label}: flagged + routed needs_human -> {item['return_status']}")
     if config_changes:
         click.echo(f"{prefix}config.json: stripped needs_human from {', '.join(config_changes)}")
+
+
+@migrate_group.command("validation-done")
+@click.option("--dry-run", is_flag=True, help="Report what would change without writing.")
+@click.option("--json", "output_json", is_flag=True, help="Output structured JSON.")
+@offline_maintenance_option
+def migrate_validation_done(dry_run: bool, output_json: bool, offline_maintenance: bool) -> None:
+    """Let in_validation reach done on a board that has both statuses.
+
+    Adds ``done`` to ``workflow.transitions.in_validation`` so a task whose
+    PR merged before validation can close without passing through
+    ``pr_open``. The done completion policy still applies. Idempotent.
+    """
+    is_json = output_json
+    refuse_on_hosted_checkout("migrate validation-done", is_json)
+    lattice_dir = require_root(is_json)
+    maintenance_gate(lattice_dir, "migrate validation-done", is_json, offline_maintenance)
+    config = load_project_config(lattice_dir)
+    workflow = config.get("workflow", {})
+    statuses = workflow.get("statuses", [])
+    targets = workflow.get("transitions", {}).get("in_validation")
+
+    changed = "in_validation" in statuses and "done" in statuses and targets is not None
+    changed = changed and "done" not in targets
+    if changed and not dry_run:
+        targets.insert(targets.index("pr_open") + 1 if "pr_open" in targets else 0, "done")
+        atomic_write(lattice_dir / "config.json", serialize_config(config))
+
+    if is_json:
+        data = {"dry_run": dry_run, "changed": changed}
+        click.echo(json.dumps({"ok": True, "data": data}, sort_keys=True, indent=2) + "\n")
+        return
+    prefix = "[dry-run] " if dry_run else ""
+    if changed:
+        click.echo(f"{prefix}config.json: in_validation can now transition to done")
+    else:
+        click.echo(
+            f"{prefix}Nothing to migrate: in_validation -> done is present or not applicable."
+        )

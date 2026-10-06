@@ -380,20 +380,32 @@ def compute_next_steps(
         }
 
     if new_status == "in_validation":
+        from lattice.core.config import validate_transition
+
+        # Merge-first boards close straight from validation (PR already merged).
+        merge_first = validate_transition(config, "in_validation", "done")
+        on_pass = (
+            "On pass move to pr_open, or straight to done when the PR already merged"
+            if merge_first
+            else "On pass move to pr_open"
+        )
         hint = (
             "Next: validate end-to-end against a running system — browser "
             "automation for web, simulator MCP for mobile, curl for APIs. "
             "Exercise the actual flow this task touched, then record evidence: "
             f"{prog} attach {label} --role validation (or {prog} comment "
-            f"{label} --role validation). On pass move to pr_open; on fail "
+            f"{label} --role validation). {on_pass}; on fail "
             "route back to in_progress (impl-level) or in_planning (plan-level). "
             "The bar: 'I saw it work,' not 'I think it should work.'"
         )
-        return hint, {
+        steps = {
             "action": "validate_e2e",
             "evidence": f"{prog} attach {label} --role validation",
             "then": "pr_open",
         }
+        if merge_first:
+            steps["or"] = "done"
+        return hint, steps
 
     if new_status == "pr_open":
         hint = (
@@ -580,6 +592,16 @@ def status_cmd(
         json_data["next_steps"] = next_steps_data
     if auto_review_result is not None:
         json_data["auto_review"] = auto_review_result
+    review_cycle = event["data"].get("review_cycle")
+    if review_cycle is not None:
+        json_data["review_cycle"] = review_cycle
+        if review_cycle["over_limit"] and not review_cycle["enforced"] and not is_json:
+            click.echo(
+                f"Warning: review cycle {review_cycle['cycle']} passes the limit of "
+                f"{review_cycle['limit']}. Recorded, not enforced: Lattice did not fire "
+                "this review, so whoever runs the reviews owns the budget.",
+                err=True,
+            )
 
     assign_msg = f"  (auto-assigned to {auto_assigned_to})" if auto_assigned_to else ""
     human_msg = f"Status: {current_status} -> {new_status} ({display_id}){assign_msg}"
@@ -959,7 +981,7 @@ def complete_cmd(
     artifact_attached (role=review), status_changed -> done.
     """
     from lattice.cli.attestations import caller_worktree, completion_attestations
-    from lattice.ops.task_complete import normalize_via, prior_status
+    from lattice.ops.task_complete import completion_path, normalize_via
 
     is_json = output_json
     # The body is resolved first, before the board, exactly as always.
@@ -1024,8 +1046,7 @@ def complete_cmd(
     display_id = snapshot.get("short_id") or snapshot["id"]
     if via is None:
         human_message = (
-            f"Completed {display_id}: {len(result.events)} events "
-            f"({prior_status(result)} -> review -> done)"
+            f"Completed {display_id}: {len(result.events)} events ({completion_path(result)})"
         )
     else:
         via_data = result.events[-1]["data"]["via"]
@@ -1034,10 +1055,9 @@ def complete_cmd(
             if via_data["kind"] == "task"
             else via_data["reference"]
         )
-        prior = prior_status(result)
-        path = "review -> done" if prior == "review" else f"{prior} -> review -> done"
         human_message = (
-            f"Completed {display_id} via {via_label}: {len(result.events)} events ({path})"
+            f"Completed {display_id} via {via_label}: {len(result.events)} events "
+            f"({completion_path(result)})"
         )
     output_result(
         data=snapshot,

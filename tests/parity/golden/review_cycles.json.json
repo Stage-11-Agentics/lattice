@@ -107,6 +107,7 @@
             ],
             "in_validation": [
               "pr_open",
+              "done",
               "in_progress",
               "in_planning",
               "blocked",
@@ -237,6 +238,12 @@
           "actor": "human:parity",
           "data": {
             "from": "review",
+            "review_cycle": {
+              "cycle": 1,
+              "enforced": false,
+              "limit": 1,
+              "over_limit": false
+            },
             "to": "in_progress"
           },
           "id": "<ID-5>",
@@ -260,15 +267,16 @@
         {
           "actor": "human:parity",
           "data": {
-            "force": true,
             "from": "review",
-            "reason": "exceptional",
+            "review_cycle": {
+              "cycle": 2,
+              "enforced": false,
+              "limit": 1,
+              "over_limit": true
+            },
             "to": "in_progress"
           },
           "id": "<ID-7>",
-          "provenance": {
-            "reason": "exceptional"
-          },
           "schema_version": 1,
           "task_id": "<ID-1>",
           "ts": "<TS>",
@@ -757,6 +765,12 @@
             "priority": "medium",
             "relationships_out": [],
             "reopened_count": 1,
+            "review_cycle": {
+              "cycle": 1,
+              "enforced": false,
+              "limit": 1,
+              "over_limit": false
+            },
             "schema_version": 1,
             "short_id": "PAR-1",
             "status": "in_progress",
@@ -837,17 +851,51 @@
         "human:parity",
         "--json"
       ],
-      "exit_code": 1,
+      "exit_code": 0,
       "stderr": {
         "lines": []
       },
       "stdout": {
         "json": {
-          "error": {
-            "code": "REVIEW_CYCLE_LIMIT",
-            "message": "Review cycle limit reached (1/1). This task has been sent back from review 1 time(s). Flag it for a human instead of cycling further: lattice needs-human <task> \"<what you need>\". Override with --force --reason."
+          "data": {
+            "acceptance_criteria": [],
+            "assigned_to": "human:parity",
+            "branch_links": [],
+            "comment_count": 0,
+            "complexity": null,
+            "created_at": "<TS>",
+            "created_by": "human:parity",
+            "custom_fields": {},
+            "description": null,
+            "done_at": null,
+            "evidence_refs": [],
+            "id": "<ID-1>",
+            "last_event_id": "<ID-7>",
+            "last_status_changed_at": "<TS>",
+            "linked_files": [],
+            "next_steps": {
+              "action": "implement",
+              "then": "review"
+            },
+            "priority": "medium",
+            "relationships_out": [],
+            "reopened_count": 2,
+            "review_cycle": {
+              "cycle": 2,
+              "enforced": false,
+              "limit": 1,
+              "over_limit": true
+            },
+            "schema_version": 1,
+            "short_id": "PAR-1",
+            "status": "in_progress",
+            "tags": null,
+            "title": "Cycling task",
+            "type": "task",
+            "updated_at": "<TS>",
+            "urgency": null
           },
-          "ok": false
+          "ok": true
         }
       }
     },
@@ -867,8 +915,8 @@
       "stdout": {
         "json": {
           "error": {
-            "code": "REVIEW_CYCLE_LIMIT",
-            "message": "Review cycle limit reached (1/1). This task has been sent back from review 1 time(s). Flag it for a human instead of cycling further: lattice needs-human <task> \"<what you need>\". Override with --force --reason."
+            "code": "INVALID_TRANSITION",
+            "message": "Invalid transition from in_progress to in_planning. Valid transitions from in_progress: review, blocked, cancelled. Use --force --reason to override."
           },
           "ok": false
         }
@@ -908,10 +956,6 @@
             "last_event_id": "<ID-7>",
             "last_status_changed_at": "<TS>",
             "linked_files": [],
-            "next_steps": {
-              "action": "implement",
-              "then": "review"
-            },
             "priority": "medium",
             "relationships_out": [],
             "reopened_count": 2,
@@ -1081,6 +1125,7 @@
             "next_steps": {
               "action": "validate_e2e",
               "evidence": "lattice attach PAR-1 --role validation",
+              "or": "done",
               "then": "pr_open"
             },
             "priority": "medium",

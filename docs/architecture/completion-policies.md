@@ -57,10 +57,20 @@ Failure behavior:
 - without `--force`: transition blocked with `COMPLETION_BLOCKED`
 - with `--force`: requires `--reason`
 
-Review-cycle limits are separate but related gates:
+Review-cycle limits are separate but related:
 
-- from `review` to rework states (`in_progress`, `in_planning`)
+- every transition from `review`, `in_validation` or `pr_open` to a rework state
+  (`in_progress`, `in_planning`) records `review_cycle` on its `status_changed`
+  event: `{cycle, limit, over_limit, enforced}`
 - limit defaults to `3` (`workflow.review_cycle_limit`)
+- past the limit the transition is refused (`REVIEW_CYCLE_LIMIT`) only when an
+  `auto_review_spawned` event names the task's latest entry into `review` as its
+  trigger; otherwise it is allowed (the CLI also warns), because whoever runs the
+  reviews owns the budget
+
+`done` is reachable from `in_validation` (merge-first flows) and is gated by the
+same `done` policy as every other route. Both rules live in the `task.status`
+operation, so the CLI, MCP, the dashboard and a hosted server apply them alike.
 
 ## Role Vocabulary
 

@@ -1073,3 +1073,64 @@ class TestForce:
         assert change["data"]["to"] == "in_progress"
         assert change["data"]["force"] is True
         assert change["data"]["reason"] == "plan lives elsewhere"
+
+
+# ---------------------------------------------------------------------------
+# Merge-first close: in_validation -> done obeys the done policy (LAT-395)
+# ---------------------------------------------------------------------------
+
+
+def _to_validation(server: ServerHandle, token: str) -> str:
+    task = create_task(server, token)["id"]
+    steps = (
+        {"new_status": "in_progress", "force": True, "reason": "test setup"},
+        {"new_status": "review"},
+        {"new_status": "in_validation"},
+    )
+    for step in steps:
+        status, _, body = server.op("alpha", "task.status", {"task": task, **step}, token=token)
+        assert status == 200, body
+    return task
+
+
+def _review_comment(server: ServerHandle, token: str, task: str) -> None:
+    params = {"task": task, "text": "Review PASS; merged.", "role": "review"}
+    status, _, body = server.op("alpha", "task.comment", params, token=token)
+    assert status == 200, body
+
+
+class TestValidationToDone:
+    def test_hosted_dashboard_refuses_without_evidence_then_allows(
+        self, server: ServerHandle, root: Path, web: WebClient
+    ) -> None:
+        token = mint(root)
+        task = _to_validation(server, token)
+        before = board_hash(root, "alpha")
+
+        refused = web.post_json(f"/p/alpha/api/tasks/{task}/status", {"status": "done"})
+
+        assert refused.status == 422, refused.text
+        assert refused.json["error"]["code"] == "COMPLETION_BLOCKED"
+        assert board_hash(root, "alpha") == before
+
+        _review_comment(server, token, task)
+        allowed = web.post_json(f"/p/alpha/api/tasks/{task}/status", {"status": "done"})
+        assert allowed.status == 200, allowed.text
+        assert allowed.json["data"]["status"] == "done"
+
+    def test_hosted_op_refuses_without_evidence_then_allows(
+        self, server: ServerHandle, root: Path
+    ) -> None:
+        token = mint(root)
+        task = _to_validation(server, token)
+        params = {"task": task, "new_status": "done"}
+
+        status, _, body = server.op("alpha", "task.status", params, token=token)
+
+        assert status == 422, body
+        assert body["error"]["code"] == "COMPLETION_BLOCKED"
+
+        _review_comment(server, token, task)
+        status, _, body = server.op("alpha", "task.status", params, token=token)
+        assert status == 200, body
+        assert body["data"]["result"]["task"]["status"] == "done"
