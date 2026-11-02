@@ -60,15 +60,9 @@ This creates a `.lattice/` directory in your project — think of it like `.git/
 
 ## Connect Claude Code
 
-This is the step that makes it click:
+This is the step that makes it click, and `lattice init` has already done it. It added a block to your project's instruction file that teaches every Claude Code session how to use Lattice: `AGENTS.md` or `CLAUDE.md`, whichever your repo has, or a new `AGENTS.md` if it has neither. It never creates a second file, because a `CLAUDE.md` beside an `AGENTS.md` hides it from Claude Code ([the full rule](user-reference.md#instruction-files)). Without this block, the agent *can* use Lattice if you ask. With it, the agent uses Lattice *by default* — creating tasks before coding, updating status at transitions, leaving breadcrumbs for the next session.
 
-```bash
-lattice setup-claude
-```
-
-This adds a block to your project's `CLAUDE.md` that teaches every Claude Code session how to use Lattice. Without this block, the agent *can* use Lattice if you ask. With it, the agent uses Lattice *by default* — creating tasks before coding, updating status at transitions, leaving breadcrumbs for the next session.
-
-That's the setup. Three commands: `install`, `init`, `setup-claude`.
+That's the setup. Two commands: `install`, `init`.
 
 ---
 
@@ -176,21 +170,21 @@ For **fully autonomous advancing**, see the [OpenClaw integration](integration-o
 
 ## Advanced: the `/lattice` skill
 
-The CLAUDE.md block covers the essentials — creating tasks, updating status, attribution. For the full CLI reference (every command, every flag), agents can load the `/lattice` skill on demand:
+The instruction-file block covers the essentials — creating tasks, updating status, attribution. For the full CLI reference (every command, every flag), agents can load the `/lattice` skill on demand:
 
 ```
 /lattice
 ```
 
 The two are complementary:
-- **CLAUDE.md block** — always loaded, teaches the workflow
+- **Instruction-file block** — always loaded, teaches the workflow
 - **`/lattice` skill** — loaded on demand, full command reference
 
 ---
 
 ## Keeping the integration current
 
-The CLAUDE.md block comes from a template that improves over time. Update your project's block to the latest version:
+The block comes from a template that improves over time. In a repo whose instruction file is `CLAUDE.md`, update the block to the latest version:
 
 ```bash
 lattice setup-claude --force
@@ -198,15 +192,17 @@ lattice setup-claude --force
 
 The `--force` flag replaces the existing block with the latest template. Without it, the command exits if it detects an existing block (to avoid accidental overwrites).
 
+`lattice setup-claude` writes to `CLAUDE.md` by name and creates it if absent, so don't run it in a repo that keeps its instructions in `AGENTS.md`: the new file would hide `AGENTS.md` from Claude Code. There, replace the block with the output of `lattice setup-prompt --claude-md`.
+
 ---
 
 ## Troubleshooting
 
 **Agent ignores Lattice and starts coding immediately.**
-The CLAUDE.md block is missing or positioned too low in the file. Run `lattice setup-claude --force`, then move the `## Lattice` section higher in CLAUDE.md. Instruction position affects compliance — put it in the first or second section.
+The block is missing or positioned too low in your instruction file. [Refresh it](#keeping-the-integration-current), then move the `## Lattice` section higher in the file. Instruction position affects compliance — put it in the first or second section.
 
 **Agent uses wrong status names** (like `in_implementation` or `in_review`).
-These are from old documentation. The real statuses are: `backlog`, `in_planning`, `planned`, `in_progress`, `review`, `pr_open`, `done`, `blocked`, `cancelled`. (`needs-human` is a flag, not a status — see `lattice list --needs-human`.) Update the block with `lattice setup-claude --force`.
+These are from old documentation. The real statuses are: `backlog`, `in_planning`, `planned`, `in_progress`, `review`, `pr_open`, `done`, `blocked`, `cancelled`. (`needs-human` is a flag, not a status — see `lattice list --needs-human`.) [Refresh the block](#keeping-the-integration-current).
 
 **`lattice next` returns nothing but there are tasks in the backlog.**
 The tasks may be assigned to a different actor, or all remaining tasks are in terminal/waiting states. Run `lattice list` to see the full picture.
@@ -219,8 +215,8 @@ The tasks may be assigned to a different actor, or all remaining tasks are in te
 |--------|---------|
 | Install | `pip install lattice-tracker` |
 | Initialize | `lattice init --actor human:you --project-code APP` |
-| Connect Claude Code | `lattice setup-claude` |
-| Update integration | `lattice setup-claude --force` |
+| Connect Claude Code | `lattice init` writes the block |
+| Update integration (CLAUDE.md repos) | `lattice setup-claude --force` |
 | Open dashboard | `lattice dashboard` |
 | Create task | `lattice create "Title" --actor human:you` |
 | Advance (in Claude Code) | `/lattice` |

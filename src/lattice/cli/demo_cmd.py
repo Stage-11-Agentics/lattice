@@ -1217,22 +1217,14 @@ def _seed_demo(target_dir: Path, quiet: bool = False) -> None:
     )
     atomic_write(lattice_dir / "context.md", context_content)
 
-    # 2b. Create project-level integration files (CLAUDE.md, agents.md)
+    # 2b. Write the Lattice block to the project's instruction file
+    from lattice.cli.instruction_file import write_instruction_block
     from lattice.cli.main import _compose_claude_md_blocks
 
-    _marker, composed_block = _compose_claude_md_blocks()
-
-    claude_md = target_dir / "CLAUDE.md"
-    if not claude_md.exists():
-        claude_md.write_text(f"# The Lighthouse\n{composed_block}", encoding="utf-8")
-        if not quiet:
-            click.echo("  CLAUDE.md        Claude Code integration")
-
-    agents_md = target_dir / "agents.md"
-    if not agents_md.exists():
-        agents_md.write_text(composed_block.lstrip("\n"), encoding="utf-8")
-        if not quiet:
-            click.echo("  agents.md        agent integration instructions")
+    marker, composed_block = _compose_claude_md_blocks()
+    write_instruction_block(
+        target_dir, marker, composed_block, title="The Lighthouse", quiet=quiet
+    )
 
     # 3. Generate timeline
     ts = _lighthouse_timeline()

@@ -912,3 +912,24 @@ Additionally, `lattice advance N` processed multiple tasks in a single context w
   unresolvable-branch cases regression-testable. The mocked diff tests are why
   these shipped: from inside a mock, a review of the wrong tree looks identical
   to a correct one.
+
+## 2026-11-02: `init` honours the repo's instruction file (LAT-431)
+
+- **Decision:** `lattice init` and `lattice demo init` write the Lattice block to
+  whichever instruction file the repo already has and never create a second one.
+  With neither file they create one, named by `DEFAULT_INSTRUCTION_FILE`
+  (`AGENTS.md`), so a different default is a one-line change.
+- **Why:** Claude Code reads `AGENTS.md` only when no `CLAUDE.md` sits beside it, so
+  writing both hid an existing `AGENTS.md`. A lowercase `agents.md` is not `AGENTS.md`
+  to a Linux reader, which a case-insensitive disk conceals.
+- **No preferred file.** A repo that keeps `CLAUDE.md` is as correct as one on
+  `AGENTS.md`. Separate files both get the block, since each has a reader.
+- **Names come from the directory listing.** On a case-insensitive disk `exists()`
+  answers for any spelling, so it cannot tell `agents.md` from `AGENTS.md`.
+- **A rename never overwrites.** If `agents.md` and `AGENTS.md` both exist on a
+  case-sensitive disk, neither is renamed: `AGENTS.md` gets the block and a warning
+  names the other.
+- **Consequence:** `--setup-claude` asks for `CLAUDE.md` only in a repo with no
+  instruction file, and says so when it declines. The block's own text names "the
+  instruction file" so it cannot tell an agent to create the second one.
+  `lattice setup-claude` still writes `CLAUDE.md` by name.

@@ -63,11 +63,7 @@ This is the key step. You're teaching your agent the Lattice protocol so it know
 
 **Claude Code** (most common):
 
-```bash
-lattice setup-claude
-```
-
-This writes a block into your project's `CLAUDE.md` — the file Claude Code reads at startup. From now on, every time you open Claude Code in this project, it already knows Lattice. You don't need to explain anything. It will create tasks before working, update statuses at transitions, and leave breadcrumbs for the next session.
+`lattice init` already did this. It wrote a block into the instruction file your repo has, `AGENTS.md` or `CLAUDE.md`, and created `AGENTS.md` if it had neither. It never creates a second one ([the full rule](user-reference.md#instruction-files)). From now on, every time you open Claude Code in this project, it already knows Lattice. You don't need to explain anything. It will create tasks before working, update statuses at transitions, and leave breadcrumbs for the next session.
 
 [Full Claude Code integration guide →](integration-claude-code.md)
 

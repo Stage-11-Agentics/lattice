@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -13,8 +14,8 @@ from lattice.core.config import default_config
 
 
 # Helper: standard interactive input that skips all prompts with defaults.
-# New flow prompts: name, project-name, project-code, agents.md confirm
-_SKIP_ALL = "\n\n\n\nn\n"  # empty name, empty project-name, empty project-code, default done-display, decline agents.md
+# New flow prompts: name, project-name, project-code, integration confirm
+_SKIP_ALL = "\n\n\n\nn\n"  # empty name, empty project-name, empty project-code, default done-display, decline integration
 
 
 class TestInitDirectoryStructure:
@@ -173,7 +174,7 @@ class TestInitActorConfig:
 
     def test_init_with_actor_flag_sets_config_default(self, tmp_path: Path) -> None:
         runner = CliRunner()
-        # --actor provided, so name prompt skipped; need: project-name, project-code, done-display, agents.md
+        # --actor provided, so name prompt skipped; need: project-name, project-code, done-display, integration
         result = runner.invoke(
             cli, ["init", "--path", str(tmp_path), "--actor", "human:atin"], input="\n\n\nn\n"
         )
@@ -184,7 +185,7 @@ class TestInitActorConfig:
 
     def test_init_prompts_for_actor_when_flag_omitted(self, tmp_path: Path) -> None:
         runner = CliRunner()
-        # Name prompt: "atin" (becomes human:atin), project-name, project-code, done-display, agents.md
+        # Name prompt: "atin" (becomes human:atin), project-name, project-code, done-display, integration
         result = runner.invoke(cli, ["init", "--path", str(tmp_path)], input="atin\n\n\n\nn\n")
         assert result.exit_code == 0
 
@@ -223,7 +224,7 @@ class TestInitActorConfig:
     def test_init_di_path_creates_agent_actor(self, tmp_path: Path) -> None:
         """Typing 'di' triggers the digital intelligence path."""
         runner = CliRunner()
-        # di, identifier, model, project-name, project-code, done-display, agents.md
+        # di, identifier, model, project-name, project-code, done-display, integration
         result = runner.invoke(
             cli,
             ["init", "--path", str(tmp_path)],
@@ -239,7 +240,7 @@ class TestInitActorConfig:
     def test_init_di_path_no_model(self, tmp_path: Path) -> None:
         """DI path with blank model still works."""
         runner = CliRunner()
-        # di, identifier, blank model, project-name, project-code, done-display, agents.md
+        # di, identifier, blank model, project-name, project-code, done-display, integration
         result = runner.invoke(
             cli,
             ["init", "--path", str(tmp_path)],
@@ -278,7 +279,7 @@ class TestInitProjectName:
 
     def test_init_prompts_for_project_name(self, tmp_path: Path) -> None:
         runner = CliRunner()
-        # name, project-name, project-code, agents.md
+        # name, project-name, project-code, integration
         result = runner.invoke(
             cli,
             ["init", "--path", str(tmp_path)],
@@ -503,51 +504,48 @@ class TestInitSubprojectCode:
 
 
 class TestInitAgentsMd:
-    """lattice init agents.md integration."""
+    """lattice init agent integration (AGENTS.md). Starting states: test_init_instruction_file.py."""
 
     def test_init_creates_agents_md_on_confirm(self, tmp_path: Path) -> None:
-        """Interactive init, confirm agents.md -> file created."""
+        """Interactive init, confirm integration -> AGENTS.md created."""
         runner = CliRunner()
-        # name, project-name, project-code, 'y' for agents.md
+        # name, project-name, project-code, 'y' for integration
         result = runner.invoke(cli, ["init", "--path", str(tmp_path)], input="\n\n\n\ny\n")
         assert result.exit_code == 0
-        assert "Created agents.md with Lattice integration" in result.output
+        assert "Created AGENTS.md with Lattice integration" in result.output
 
-        agents_md = tmp_path / "agents.md"
-        assert agents_md.exists()
-        content = agents_md.read_text()
-        assert "## Lattice" in content
+        assert "AGENTS.md" in os.listdir(tmp_path)
+        assert "## Lattice" in (tmp_path / "AGENTS.md").read_text()
 
     def test_init_skips_agents_md_on_decline(self, tmp_path: Path) -> None:
-        """Interactive init, decline agents.md -> file not created."""
+        """Interactive init, decline integration -> no file created."""
         runner = CliRunner()
         result = runner.invoke(
             cli,
             ["init", "--path", str(tmp_path)],
-            input=_SKIP_ALL,  # 'n' for agents.md
+            input=_SKIP_ALL,  # 'n' for integration
         )
         assert result.exit_code == 0
 
-        agents_md = tmp_path / "agents.md"
-        assert not agents_md.exists()
+        assert not (tmp_path / "AGENTS.md").exists()
 
     def test_init_appends_to_existing_agents_md(self, tmp_path: Path) -> None:
-        """Existing agents.md without Lattice block -> appends."""
-        agents_md = tmp_path / "agents.md"
+        """Existing AGENTS.md without Lattice block -> appends."""
+        agents_md = tmp_path / "AGENTS.md"
         agents_md.write_text("# My Agent Instructions\n\nExisting content.\n")
 
         runner = CliRunner()
         result = runner.invoke(cli, ["init", "--path", str(tmp_path)], input="\n\n\n\ny\n")
         assert result.exit_code == 0
-        assert "Updated agents.md with Lattice integration" in result.output
+        assert "Updated AGENTS.md with Lattice integration" in result.output
 
         content = agents_md.read_text()
         assert "Existing content" in content
         assert "## Lattice" in content
 
     def test_init_agents_md_already_has_lattice(self, tmp_path: Path) -> None:
-        """Existing agents.md with Lattice block -> no duplicate."""
-        agents_md = tmp_path / "agents.md"
+        """Existing AGENTS.md with Lattice block -> no duplicate."""
+        agents_md = tmp_path / "AGENTS.md"
         agents_md.write_text("# My Agent\n\n## Lattice\n\nAlready here.\n")
 
         runner = CliRunner()
@@ -558,22 +556,20 @@ class TestInitAgentsMd:
         content = agents_md.read_text()
         assert content.count("## Lattice") == 1
 
-    def test_init_noninteractive_auto_creates_agents_md(self, tmp_path: Path) -> None:
-        """Non-interactive init auto-creates agents.md."""
+    def test_init_auto_creates_in_noninteractive(self, tmp_path: Path) -> None:
+        """Non-interactive init auto-creates AGENTS.md."""
         runner = CliRunner()
         result = runner.invoke(
             cli,
             ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST"],
         )
         assert result.exit_code == 0
-        assert "Created agents.md" in result.output
+        assert "Created AGENTS.md" in result.output
 
-        agents_md = tmp_path / "agents.md"
-        assert agents_md.exists()
-        assert "## Lattice" in agents_md.read_text()
+        assert "## Lattice" in (tmp_path / "AGENTS.md").read_text()
 
     def test_init_no_setup_agents_flag(self, tmp_path: Path) -> None:
-        """--no-setup-agents prevents agents.md creation."""
+        """--no-setup-agents prevents creating an instruction file."""
         runner = CliRunner()
         result = runner.invoke(
             cli,
@@ -590,15 +586,15 @@ class TestInitAgentsMd:
         )
         assert result.exit_code == 0
 
-        agents_md = tmp_path / "agents.md"
-        assert not agents_md.exists()
+        assert not (tmp_path / "AGENTS.md").exists()
+        assert not (tmp_path / "CLAUDE.md").exists()
 
 
 class TestInitClaudeMd:
-    """lattice init CLAUDE.md integration (now secondary to agents.md)."""
+    """lattice init CLAUDE.md integration."""
 
     def test_init_updates_existing_claude_md(self, tmp_path: Path) -> None:
-        """When agents.md is created and CLAUDE.md exists, it gets updated too."""
+        """When CLAUDE.md exists, it gets the block."""
         claude_md = tmp_path / "CLAUDE.md"
         claude_md.write_text("# My Project\n\nExisting content.\n")
 
@@ -614,19 +610,6 @@ class TestInitClaudeMd:
         content = claude_md.read_text()
         assert "## Lattice" in content
         assert "Existing content" in content
-
-    def test_init_creates_claude_md_in_noninteractive(self, tmp_path: Path) -> None:
-        """Non-interactive init auto-creates CLAUDE.md."""
-        runner = CliRunner()
-        result = runner.invoke(
-            cli,
-            ["init", "--path", str(tmp_path), "--actor", "human:test", "--project-code", "TST"],
-        )
-        assert result.exit_code == 0
-
-        claude_md = tmp_path / "CLAUDE.md"
-        assert claude_md.exists()
-        assert "## Lattice" in claude_md.read_text()
 
     def test_init_setup_claude_flag_creates(self, tmp_path: Path) -> None:
         """--setup-claude explicitly creates CLAUDE.md."""

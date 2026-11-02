@@ -24,7 +24,7 @@ Lattice is not an app you open. it's not a website. it's not a standalone thing.
 
 **Lattice lives inside your agentic coding tool.** you install it on your machine. you initialize it in your project. and then your coding agent — Claude Code, Codex, OpenClaw, whatever you use — picks it up and runs with it.
 
-if you're using **Claude Code**: you install Lattice, run `lattice setup-claude`, and from that point on every Claude Code session in that project automatically knows how to create tasks, claim work, update status, and leave context for the next session. you didn't teach it. Lattice did.
+if you're using **Claude Code**: you install Lattice, run `lattice init`, and from that point on every Claude Code session in that project automatically knows how to create tasks, claim work, update status, and leave context for the next session. you didn't teach it. Lattice did.
 
 if you're using **Codex CLI**: same install, run `lattice setup-codex`, and Codex reads the Lattice skill at session start. same pattern. same result.
 
@@ -78,8 +78,7 @@ pip install lattice-tracker
 cd your-project/
 lattice init
 
-# 3. connect to your coding agent (pick one)
-lattice setup-claude            # Claude Code (writes to CLAUDE.md)
+# 3. connect to your coding agent (Claude Code is done: init wrote your instruction file)
 lattice setup-claude-skill      # Claude Code (installs as global skill)
 lattice setup-codex             # Codex CLI
 lattice setup-openclaw          # OpenClaw
@@ -95,7 +94,7 @@ that's it. your agents now track their own work through the CLI. you watch. stee
 **what just happened:**
 - the install put the `lattice` command on your PATH
 - `lattice init` created `.lattice/` in your project — the shared coordination state
-- `lattice setup-claude` wrote instructions into `CLAUDE.md` so Claude Code knows the Lattice protocol
+- it also wrote instructions into your instruction file so Claude Code knows the Lattice protocol: `AGENTS.md` or `CLAUDE.md`, whichever you have, or a new `AGENTS.md` if you have neither. it never creates a second one ([the full rule](user-reference.md#instruction-files))
 - next time you open your coding agent in this project, it already knows how to use Lattice
 
 the hard part is not the install. the hard part is trusting the loop. give it time.
@@ -106,7 +105,7 @@ the hard part is not the install. the hard part is trusting the loop. give it ti
 
 **the dashboard** is for you, the human. a local web UI. Kanban board. activity feed. stats. relationship graph. you create tasks. make decisions. review work. unblock your agents. if you never touch the terminal. you can still run a full Lattice workflow.
 
-**the CLI** is for your agents. when Claude Code reads your CLAUDE.md, it learns the commands and uses them autonomously. creating tasks. claiming work. transitioning statuses. leaving breadcrumbs. the CLI is the agent's native tongue. you'll type a few CLI commands during setup. after that. the dashboard is where you live.
+**the CLI** is for your agents. when Claude Code reads your instruction file, it learns the commands and uses them autonomously. creating tasks. claiming work. transitioning statuses. leaving breadcrumbs. the CLI is the agent's native tongue. you'll type a few CLI commands during setup. after that. the dashboard is where you live.
 
 ---
 
@@ -337,17 +336,15 @@ lattice init --actor human:alice --project-code PROJ
 
 **Claude Code:**
 
-```bash
-lattice setup-claude
-```
+`lattice init` adds a block to your project's instruction file that teaches agents the full workflow. create tasks before working. update status at transitions. leave breadcrumbs. without this block, agents can use Lattice if prompted. with it. they do it by default.
 
-adds a block to your project's `CLAUDE.md` that teaches agents the full workflow. create tasks before working. update status at transitions. leave breadcrumbs. without this block, agents can use Lattice if prompted. with it. they do it by default.
-
-update to latest template:
+update to latest template, in a repo whose instruction file is `CLAUDE.md`:
 
 ```bash
 lattice setup-claude --force
 ```
+
+this command writes to `CLAUDE.md` by name and creates it if absent. don't run it in a repo that keeps its instructions in `AGENTS.md`: the new file would hide `AGENTS.md` from Claude Code. there, replace the block with the output of `lattice setup-prompt --claude-md`.
 
 **MCP-compatible tools:**
 
