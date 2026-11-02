@@ -343,7 +343,7 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 
 | Command | What it does |
 |---------|-------------|
-| `lattice init` | Create `.lattice/` in your project |
+| `lattice init` | Create `.lattice/` in your project and write the Lattice block to its [instruction file](#instruction-files) |
 | `lattice create <title>` | Create a task |
 | `lattice status <id> <status>` | Change task status |
 | `lattice needs-human <id> "<reason>"` | Flag a task for human attention (reason required); `--clear [--note ...]` to clear |
@@ -371,11 +371,35 @@ The CLI is Lattice's write interface — the primary way agents interact with th
 | `lattice restart` | Restart a running dashboard (sends SIGHUP) |
 | `lattice doctor` | Check project integrity |
 | `lattice rebuild <id\|--all>` | Rebuild snapshots from events |
-| `lattice setup-claude` | Add/update CLAUDE.md integration block |
+| `lattice setup-claude` | Add/update the block in CLAUDE.md, creating it if absent (see [instruction files](#instruction-files)) |
 | `lattice setup-claude-skill` | Install Lattice skill for Claude Code |
 | `lattice setup-codex` | Install Lattice skill for Codex CLI |
 | `lattice setup-openclaw` | Install Lattice skill for OpenClaw |
 | `lattice setup-prompt` | Print agent instructions to stdout |
+
+### Instruction files
+
+`lattice init` and `lattice demo init` write the Lattice block to whichever instruction file the repo already has, and never create a second one. Claude Code reads `AGENTS.md` only when no `CLAUDE.md` sits beside it, so a new `CLAUDE.md` would hide an existing `AGENTS.md`.
+
+| Repo has | Result |
+|---|---|
+| Only `AGENTS.md` | Block in `AGENTS.md`. No `CLAUDE.md` created. |
+| Only `CLAUDE.md` | Block in `CLAUDE.md`. No `AGENTS.md` created. |
+| Both, one a symlink to the other | Block written once, through the link. The link is preserved. |
+| Both, separate files | Block in both. Nothing new created. |
+| A lowercase `agents.md` | Block in it, and it is renamed to `AGENTS.md` (with `git mv` if tracked). |
+| Neither | One new file, `AGENTS.md`. |
+
+A second run of `lattice init` changes nothing.
+
+| Flag | Effect |
+|---|---|
+| `--setup-claude` | Creates `CLAUDE.md` instead of `AGENTS.md` when the repo has no instruction file. Next to an existing `AGENTS.md` it creates nothing, says so, and the block goes in `AGENTS.md`. |
+| `--setup-agents` | Writes the block by the table above, without the interactive prompt. |
+| `--no-setup-claude` | Leaves `CLAUDE.md` alone. If that is the repo's only instruction file, no block is written and no second file is created. |
+| `--no-setup-agents` | Writes no block, unless `--setup-claude` is also given. |
+
+`lattice setup-claude` is separate: it writes to `CLAUDE.md` by name and creates it if absent, so use it only in a repo whose instruction file is `CLAUDE.md`. In a repo with `AGENTS.md`, refresh the block by replacing it with the output of `lattice setup-prompt --claude-md`.
 
 ### Flags
 

@@ -50,7 +50,7 @@ that's it. your agents now track their own work. you watch. steer. decide.
 
 ### important: Lattice lives inside your agent
 
-you don't run prompts or write code in Lattice. Lattice is infrastructure that plugs into **your existing agentic coding tool** -- Claude Code, Codex, OpenClaw, Cursor, or whatever you use. step 3 above teaches your agent the Lattice protocol. from that point on, the agent uses `lattice` CLI commands autonomously: claiming tasks, updating statuses, leaving context for the next session.
+you don't run prompts or write code in Lattice. Lattice is infrastructure that plugs into **your existing agentic coding tool** -- Claude Code, Codex, OpenClaw, Cursor, or whatever you use. step 2 above teaches your agent the Lattice protocol, in the instruction file your repo already has (`AGENTS.md` or `CLAUDE.md`, or a new `AGENTS.md` if it has neither). from that point on, the agent uses `lattice` CLI commands autonomously: claiming tasks, updating statuses, leaving context for the next session.
 
 you use Lattice by talking to your existing agents, and humans view the system state on the dashboard. your agents use the CLI to get state and edit the raw filesystem directly. one source of truth. two interfaces.
 

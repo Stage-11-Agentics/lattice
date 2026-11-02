@@ -7,6 +7,11 @@ from pathlib import Path
 
 import click
 
+from lattice.cli.instruction_file import (
+    DEFAULT_INSTRUCTION_FILE,
+    describe_instruction_file,
+    write_instruction_block,
+)
 from lattice.core.config import (
     WORKFLOW_PRESETS,
     compose_workflow,
@@ -429,13 +434,16 @@ def _stdin_is_tty() -> bool:
     "--setup-claude/--no-setup-claude",
     "setup_claude",
     default=None,
-    help="Create or update CLAUDE.md with Lattice agent integration.",
+    help="Ask for CLAUDE.md: created only when the repo has no instruction file, "
+    "and never added beside an existing one.",
 )
 @click.option(
     "--setup-agents/--no-setup-agents",
     "setup_agents",
     default=None,
-    help="Create or update agents.md with Lattice agent integration.",
+    help="Write Lattice agent integration to the repo's instruction file: AGENTS.md or "
+    "CLAUDE.md, whichever it has, both if they are separate files, or a new "
+    f"{DEFAULT_INSTRUCTION_FILE} if it has neither. Never creates a second file.",
 )
 @click.option(
     "--seed/--no-seed",
@@ -839,72 +847,67 @@ def init(
 
     # ── Agent Integration ────────────────────────────────────────────
 
-    agents_created = False
+    offer_openclaw = False
 
-    if not non_interactive:
+    if not non_interactive and setup_agents is None:
         # Interactive: show explanation and confirm
-        if setup_agents is None:
-            click.echo("")
-            click.echo(
-                "\u2500\u2500 integration "
-                "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
-                "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+        click.echo("")
+        click.echo(
+            "\u2500\u2500 integration "
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+            "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+        )
+        click.echo("")
+        click.echo("Lattice works by integrating into your agent's environment.")
+        click.echo("this means adding instructions to your repo's AGENTS.md or CLAUDE.md")
+        click.echo(f"(or a new {DEFAULT_INSTRUCTION_FILE} if it has neither)")
+        click.echo("that teach your agent the Lattice protocol.")
+        click.echo("")
+        click.echo("other agents: lattice setup-codex, lattice setup-openclaw,")
+        click.echo("or lattice setup-prompt to print instructions for any agent.")
+        click.echo("")
+        try:
+            proceed = click.confirm(
+                "Set up agent integration? (press Enter or y to continue)",
+                default=True,
             )
-            click.echo("")
-            click.echo("Lattice works by integrating into your agent's environment.")
-            click.echo("this means creating agents.md (and CLAUDE.md) with instructions")
-            click.echo("that teach your agent the Lattice protocol.")
-            click.echo("")
-            click.echo("other agents: lattice setup-codex, lattice setup-openclaw,")
-            click.echo("or lattice setup-prompt to print instructions for any agent.")
-            click.echo("")
-            try:
-                proceed = click.confirm(
-                    "Set up agent integration? (press Enter or y to continue)",
-                    default=True,
-                )
-            except (click.Abort, EOFError):
-                proceed = False
+        except (click.Abort, EOFError):
+            proceed = False
 
-            if proceed:
-                _create_or_update_agents_md(root, config)
-                _offer_claude_md(root, auto_accept=True, config=config)
-                agents_created = True
-                click.echo("")
+        if proceed:
+            offer_openclaw = True
+            # A yes here has always outranked --no-setup-claude.
+            if setup_claude is False:
+                setup_claude = None
+        else:
+            setup_agents = False
 
-                # OpenClaw prompt
-                try:
-                    use_openclaw = click.confirm(
-                        "Also install for OpenClaw?",
-                        default=False,
-                    )
-                except (click.Abort, EOFError):
-                    use_openclaw = False
+    marker, composed_block = _compose_claude_md_blocks(config)
+    instruction_files = write_instruction_block(
+        root,
+        marker,
+        composed_block,
+        title=root.name,
+        setup_agents=setup_agents,
+        setup_claude=setup_claude,
+    )
 
-                if use_openclaw:
-                    _install_openclaw_skill(root)
+    if offer_openclaw:
+        click.echo("")
+        try:
+            use_openclaw = click.confirm(
+                "Also install for OpenClaw?",
+                default=False,
+            )
+        except (click.Abort, EOFError):
+            use_openclaw = False
 
-        elif setup_agents:
-            _create_or_update_agents_md(root, config)
-            agents_created = True
-        # else: --no-setup-agents
-    else:
-        # Non-interactive: auto-create unless explicitly declined
-        if setup_agents is not False:
-            _create_or_update_agents_md(root, config)
-            agents_created = True
-
-    # CLAUDE.md: create or update for non-interactive or explicit flag.
-    # (Interactive path handles CLAUDE.md inline above.)
-    if not agents_created or non_interactive:
-        if setup_claude is True:
-            _offer_claude_md(root, auto_accept=True, config=config)
-        elif setup_claude is not False and agents_created:
-            _offer_claude_md(root, auto_accept=True, config=config)
+        if use_openclaw:
+            _install_openclaw_skill(root)
 
     # ── Dashboard auto-start (interactive + real TTY only) ───────────
 
@@ -950,10 +953,8 @@ def init(
         click.echo(f"  {LATTICE_DIR}/          task state, events, plans, notes")
         n_statuses = len(config["workflow"]["statuses"])
         click.echo(f"  workflow         {status_preset} ({n_statuses} statuses)")
-        if (root / "agents.md").exists():
-            click.echo("  agents.md        agent integration instructions")
-        if (root / "CLAUDE.md").exists():
-            click.echo("  CLAUDE.md        Claude Code integration")
+        for name in instruction_files:
+            click.echo(f"  {name:<17}{describe_instruction_file(name)}")
         if seed and project_code:
             click.echo("  + example tasks  run 'lattice list' to see them")
         click.echo("")
@@ -981,7 +982,8 @@ def init(
 
         step += 1
         click.echo(f"  {step}. test it \u2014 open an agent session, ask it to create a task.")
-        click.echo("     if it works, you're wired. if not, check agents.md.")
+        instruction_file = instruction_files[0] if instruction_files else DEFAULT_INSTRUCTION_FILE
+        click.echo(f"     if it works, you're wired. if not, check {instruction_file}.")
         click.echo("")
 
         step += 1
@@ -1020,30 +1022,6 @@ def init(
 # ---------------------------------------------------------------------------
 # Agent integration helpers
 # ---------------------------------------------------------------------------
-
-
-def _create_or_update_agents_md(root: Path, config: dict | None = None) -> None:
-    """Create or update agents.md with Lattice integration block."""
-    if config is None:
-        config = _load_instance_config(root)
-    marker, composed_block = _compose_claude_md_blocks(config)
-    agents_md = root / "agents.md"
-
-    try:
-        if agents_md.exists():
-            content = agents_md.read_text(encoding="utf-8")
-            if marker in content:
-                click.echo("  agents.md already has Lattice integration.")
-                return
-            # Append to bottom
-            with open(agents_md, "a", encoding="utf-8") as f:
-                f.write("\n" + composed_block)
-            click.echo("  Updated agents.md with Lattice integration.")
-        else:
-            agents_md.write_text(composed_block.lstrip("\n"), encoding="utf-8")
-            click.echo("  Created agents.md with Lattice integration.")
-    except OSError as e:
-        click.echo(f"  Warning: could not update agents.md: {e}", err=True)
 
 
 def _install_openclaw_skill(root: Path) -> None:
@@ -1211,44 +1189,6 @@ def _collect_all_markers() -> list[str]:
         if marker and marker not in markers:
             markers.append(marker)
     return markers
-
-
-def _offer_claude_md(root: Path, *, auto_accept: bool = False, config: dict | None = None) -> None:
-    """Detect CLAUDE.md and offer to add Lattice integration block.
-
-    When *auto_accept* is True (non-interactive init), automatically create or
-    update CLAUDE.md without prompting.
-    """
-    if config is None:
-        config = _load_instance_config(root)
-    marker, composed_block = _compose_claude_md_blocks(config)
-
-    claude_md = root / "CLAUDE.md"
-
-    try:
-        if claude_md.exists():
-            content = claude_md.read_text(encoding="utf-8")
-            if marker in content:
-                click.echo("  CLAUDE.md already has Lattice integration.")
-                return
-            if auto_accept or click.confirm(
-                "Found CLAUDE.md \u2014 add Lattice agent integration?",
-                default=True,
-            ):
-                with open(claude_md, "a", encoding="utf-8") as f:
-                    f.write(composed_block)
-                click.echo("  Updated CLAUDE.md with Lattice integration.")
-        else:
-            if auto_accept or click.confirm(
-                "Create CLAUDE.md with Lattice agent integration?",
-                default=True,
-            ):
-                claude_md.write_text(f"# {root.name}\n{composed_block}", encoding="utf-8")
-                click.echo("  Created CLAUDE.md with Lattice integration.")
-    except (click.Abort, EOFError):
-        # Non-interactive mode — skip CLAUDE.md prompt silently.
-        # The core init already succeeded; this is optional.
-        pass
 
 
 # ---------------------------------------------------------------------------

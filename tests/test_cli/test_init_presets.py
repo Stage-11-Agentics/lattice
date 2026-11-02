@@ -15,7 +15,7 @@ from lattice.core.config import default_config, linear_workflow
 # name, project-name, project-code (the interview question comes next when
 # the TTY guard passes).
 _PRE_INTERVIEW = "\n\n\n"
-# Post-interview prompts: done-display choice, agents.md confirm.
+# Post-interview prompts: done-display choice, integration confirm.
 _POST_INTERVIEW = "1\nn\n"
 
 
@@ -202,9 +202,9 @@ class TestGeneratedGuidance:
             ],
         )
         assert result.exit_code == 0, result.output
-        agents_md = (tmp_path / "agents.md").read_text(encoding="utf-8")
+        agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
         for absent in ("in_planning", "in_validation", "pr_open", "`planned`", "`review`"):
-            assert absent not in agents_md, f"agents.md leaks {absent!r}"
+            assert absent not in agents_md, f"AGENTS.md leaks {absent!r}"
         assert "backlog → todo → in_progress → in_review → done" in agents_md
 
     def test_stage11_agents_md_matches_static_block(self, tmp_path: Path) -> None:
@@ -216,7 +216,7 @@ class TestGeneratedGuidance:
             ["init", "--path", str(tmp_path), "--actor", "human:tester", "--project-code", "T"],
         )
         assert result.exit_code == 0, result.output
-        agents_md = (tmp_path / "agents.md").read_text(encoding="utf-8")
+        agents_md = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
         assert CLAUDE_MD_BLOCK.lstrip("\n") in agents_md + "\n"
 
 
