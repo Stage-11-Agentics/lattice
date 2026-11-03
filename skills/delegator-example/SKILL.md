@@ -130,7 +130,7 @@ Pre-flight:
 - `CMUX_SHELL_INTEGRATION=1` (you are in c11). If not, bail — this pattern depends on c11 panes.
 - The target ticket exists: `lattice show <TICKET>` returns a task.
 - Load the `c11` and `lattice` skills if not already loaded.
-- The target repo has a `CLAUDE.md` the delegator can read for project-specific conventions (typing-latency paths, localization policy, testing policy, release flow, validation flow, etc.). Don't duplicate those rules here — point at CLAUDE.md.
+- The target repo has a `AGENTS.md` the delegator can read for project-specific conventions (typing-latency paths, localization policy, testing policy, release flow, validation flow, etc.). Don't duplicate those rules here — point at AGENTS.md.
 
 ## Setup playbook
 
@@ -317,7 +317,7 @@ Reads can come from either side; the worktree's `.lattice/` is a snapshot for re
 2. **lattice** — Advance loop, statuses, `complete` ceremony, plan file at `.lattice/notes/<ulid>.md`.
 3. **delegator-example** (this skill) — the pattern you're implementing.
 4. Any review/PR/release skill the project ships with (e.g., `trident-code-review`, `compushar`, `release-local`, etc.).
-5. **Read the project's `CLAUDE.md`.** It holds the project-specific rules — hot paths, localization, testing, validation, release. Do not improvise these; CLAUDE.md is authoritative.
+5. **Read the project's `AGENTS.md`.** It holds the project-specific rules — hot paths, localization, testing, validation, release. Do not improvise these; AGENTS.md is authoritative.
 
 ## Orient immediately
 
@@ -385,7 +385,7 @@ Every phase below begins with a **status bump** as its first action. This is non
 
 ### 2. Implement
 - **Status bump (first action):** `(cd {{REPO_ROOT}} && lattice status {{TICKET}} in_progress --actor {{ACTOR}})`. Verify with `(cd {{REPO_ROOT}} && lattice show {{TICKET}} | grep "^Status:")`.
-- Spawn **Impl** sibling. Prompt it to: read the plan, implement commit-by-commit with clear messages in `{{WT_DIR}}`, push after meaningful commits, post `lattice comment` updates on the ticket *via the parent repo* after each meaningful commit. Respect every CLAUDE.md constraint.
+- Spawn **Impl** sibling. Prompt it to: read the plan, implement commit-by-commit with clear messages in `{{WT_DIR}}`, push after meaningful commits, post `lattice comment` updates on the ticket *via the parent repo* after each meaningful commit. Respect every AGENTS.md constraint.
 - **Impl must surface deviations from the plan explicitly in its completion comment**, even when the deviation is the right judgment call. Format: "Deviated from plan on X — chose Y instead because Z." Skipped items, deferred tests, substituted approaches — list them. A silent right-decision is harder for the next phase to validate than an explicit one (see *Verify the prior phase's claims* in Core principles).
 - If user-facing strings change and the repo is localized, spawn a **Translator** sibling after impl. Parallelize one-per-locale for larger batches.
 - **Status bump on exit:** `(cd {{REPO_ROOT}} && lattice status {{TICKET}} review --actor {{ACTOR}})`. Verify before continuing.
@@ -414,7 +414,7 @@ Every phase below begins with a **status bump** as its first action. This is non
 - **Max 3 rework cycles** before the delegator raises the needs-human flag — pattern means something deeper is off.
 
 ### 4. Validate
-- Before handoff, the delegator (or a dedicated **Validate** sibling) runs whatever validation the project's CLAUDE.md prescribes. This is typically: build the project in a way the operator can smoke-test (tagged local build, preview deploy, simulator run, headless browser check), confirm it comes up cleanly, post usage instructions on the ticket, and leave the validation artifact in a state the operator can poke at.
+- Before handoff, the delegator (or a dedicated **Validate** sibling) runs whatever validation the project's AGENTS.md prescribes. This is typically: build the project in a way the operator can smoke-test (tagged local build, preview deploy, simulator run, headless browser check), confirm it comes up cleanly, post usage instructions on the ticket, and leave the validation artifact in a state the operator can poke at.
 - The point is that the human's job when they show up is to *smoke-test*, not *build from scratch*. The delegator has done the building; the human does the last mile.
 - If validation reveals issues, treat them like Review major findings: escalate, spawn a Fix sibling, push fixes.
 
@@ -457,7 +457,7 @@ Post a one-line Lattice comment at every phase transition so the orchestrator ca
 - **Code in the worktree, Lattice in the parent.** All code edits, builds, and commits stay in `{{WT_DIR}}`. Every `lattice` write goes through `(cd {{REPO_ROOT}} && lattice ...)`. Don't write code into the parent repo's working tree; don't write Lattice state into the worktree's `.lattice/`. Two homes, two purposes.
 - **Prefer cohesive tickets.** Absorb follow-up work into the current PR when it fits. Create follow-up tickets reluctantly.
 - **Don't mix unrelated fixes into this ticket's commits.** Upstream-worthy fixes discovered along the way get their own commits and, if appropriate, their own tickets.
-- **Follow CLAUDE.md, not your instincts.** Testing, hot paths, localization, validation — all authoritative there. Deviations break the operator's trust faster than bugs do.
+- **Follow AGENTS.md, not your instincts.** Testing, hot paths, localization, validation — all authoritative there. Deviations break the operator's trust faster than bugs do.
 - **Don't address the human directly from a sub-agent.** Sub-agents post to Lattice and stop. The delegator is the human's interface.
 - **No `--no-verify` commits** unless the operator explicitly asked for it.
 - **Detect TUI auto-launch before sending an agent launch.** If the operator's shell auto-starts a TUI (e.g. Claude Code via `cc`) on terminal init, a `c11 send "cd ... && claude ..."` may arrive after the TUI is up and get typed into it as a user message rather than into the shell — the resulting nested-claude is functional but cosmetically confusing. Step 6 of the setup playbook reads the screen first and adapts. The same pattern applies to phase sub-agent launches.
@@ -655,7 +655,7 @@ If the delegator's surface closes (e.g. the operator closes the pane), the PTY s
 ## Start now
 
 1. Orient.
-2. Read ticket + any existing plan + project CLAUDE.md.
+2. Read ticket + any existing plan + project AGENTS.md.
 3. Move to `in_planning`, spawn Plan sibling.
 4. Comment on the ticket: "Delegator online. Plan phase starting in sibling surface <ref>."
 
