@@ -30,7 +30,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
@@ -48,6 +48,8 @@ from lattice.storage.operations import AuthorityCache, authority_cache
 
 if TYPE_CHECKING:
     from lattice.server.app import ServerState
+
+T = TypeVar("T")
 
 MEMO_ENTRIES_PER_PROJECT = 256
 OP_ID_HEADER = "lattice-op-id"
@@ -77,8 +79,9 @@ class CachedRead:
 
 
 class ReadMemo:
-    """One project's memoized dashboard reads at one head. Used under the
-    project's work lock only; the lock here guards the memo map itself."""
+    """One project's memoized reads at one head: the dashboard's responses, and
+    the projects overview's board summary (``lattice.server.overview``). Used
+    under the project's work lock only; the lock here guards the memo map itself."""
 
     def __init__(self, limit: int = MEMO_ENTRIES_PER_PROJECT) -> None:
         self.limit = limit
@@ -86,7 +89,7 @@ class ReadMemo:
         #: reload can adopt files changed while unloaded at the same seq.
         self.journal: object | None = None
         self.head: tuple[str | None, int] | None = None
-        self.entries: OrderedDict[tuple[str, str], CachedRead] = OrderedDict()
+        self.entries: OrderedDict[tuple[str, str], Any] = OrderedDict()
         #: Replays reused within one head, and across heads only while their
         #: event logs are byte-for-byte unchanged, so a write costs the next
         #: read one replay, not one per task (AC-42). Scoped to one load and
@@ -98,8 +101,8 @@ class ReadMemo:
         journal: object,
         head: tuple[str | None, int],
         key: tuple[str, str],
-        compute: Callable[[], CachedRead],
-    ) -> CachedRead:
+        compute: Callable[[], T],
+    ) -> T:
         if journal is not self.journal or (self.head and head[0] != self.head[0]):
             self.authorities = AuthorityCache()  # a new load or epoch: nothing carries over
         self.authorities.begin(head)
