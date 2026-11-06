@@ -137,7 +137,11 @@ def test_who_is_not_identified(direct: Tailnet, answer, host, headers, whois_run
 
 def test_another_site_may_link_to_a_board(direct: Tailnet) -> None:
     headers = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}
-    assert direct.get("/p/alpha/", **headers).status == 200
+    page = direct.get("/p/alpha/", **headers, **{"Sec-Fetch-Dest": "document"})
+    assert page.status == 200
+    assert page.headers["cross-origin-resource-policy"] == "same-origin"
+    framed = direct.get("/p/alpha/", **headers, **{"Sec-Fetch-Dest": "iframe"})
+    assert framed.status == 303
     same = {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors"}
     assert direct.get("/p/alpha/api/tasks", **same).status == 200
 
@@ -165,18 +169,26 @@ def test_revoking_the_grants_token_ends_access_at_once(direct: Tailnet, root: Pa
     assert direct.get("/p/alpha/").status == 303
 
 
+def _records(root: Path) -> list[dict]:
+    data = json.loads((root / "tokens.json").read_text())
+    return data["tokens"] if isinstance(data, dict) else data
+
+
+def _edit_record(root: Path, token_id: str, **changes) -> None:
+    path = root / "tokens.json"
+    data = json.loads(path.read_text())
+    for record in data["tokens"] if isinstance(data, dict) else data:
+        if record["id"] == token_id:
+            record.update(changes)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
 def test_a_grant_token_the_bearer_rule_refuses_authenticates_nobody(
     direct: Tailnet, root: Path
 ) -> None:
     """An ``only`` restriction without the ``only-v1:`` hash prefix (a hand edit,
     version skew) is refused for a bearer, so it is refused here too."""
-    path = root / "tokens.json"
-    data = json.loads(path.read_text())
-    records = data["tokens"] if isinstance(data, dict) else data
-    for record in records:
-        if record["id"] == direct.token_id:
-            record["only"] = ["issue.comment"]
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    _edit_record(root, direct.token_id, only=["issue.comment"])
     assert direct.get("/p/alpha/api/tasks").status == 401
 
 
@@ -238,12 +250,34 @@ def test_the_stream_follows_the_tailnet_identity(direct: Tailnet, root: Path) ->
         assert wait_for(ended, timeout=10)
     finally:
         reader.close()
+
+
+def test_the_stream_refuses_an_ungranted_node_and_a_cross_site_frame(direct: Tailnet) -> None:
+    framed = {"Host": HOST, "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}
+    framed["Sec-Fetch-Dest"] = "iframe"
+    reader = open_stream(direct.server.url, "alpha", None, headers=framed)
+    try:
+        assert reader.status == 401
+    finally:
+        reader.close()
+    assert direct.calls == []  # refused before any lookup
     direct.who["answer"] = PHONE
-    refused = open_stream(direct.server.url, "alpha", None, headers={"Host": "board.other"})
+    refused = open_stream(direct.server.url, "alpha", None, headers={"Host": HOST})
     try:
         assert refused.status == 401
     finally:
         refused.close()
+    assert direct.calls == ["127.0.0.1"]  # looked up, and PHONE is not granted
+
+
+def test_a_session_whose_token_gains_a_bad_restriction_ends(direct: Tailnet, root: Path) -> None:
+    web = WebClient(direct.server)
+    token = mint(root, user="human:bob")
+    assert web.login(token).status == 303
+    assert web.request("GET", "/p/alpha/api/tasks", headers={"Host": "elsewhere"}).status == 200
+    bob = next(r for r in _records(root) if r["user"] == "human:bob")
+    _edit_record(root, bob["id"], only=["issue.comment"])
+    assert web.request("GET", "/p/alpha/api/tasks", headers={"Host": "elsewhere"}).status == 401
 
 
 def test_a_filing_only_grant_authenticates_nobody(root: Path, monkeypatch) -> None:
@@ -431,3 +465,14 @@ def test_check_tailnet_accepts_a_good_section() -> None:
 def test_check_tailnet_refuses_mistakes(bad) -> None:
     with pytest.raises(ServerConfigError):
         check_tailnet(bad)
+
+
+def test_trust_forwarded_needs_a_trusted_proxy() -> None:
+    from lattice.server.config import parse_config
+
+    with pytest.raises(ServerConfigError, match="trusted_proxies"):
+        parse_config({"tailnet": {**GOOD, "trust_forwarded": True}})
+    config = parse_config(
+        {"trusted_proxies": ["192.0.2.1"], "tailnet": {**GOOD, "trust_forwarded": True}}
+    )
+    assert config.tailnet is not None and config.tailnet.trust_forwarded

@@ -123,8 +123,10 @@ def is_hosted_api(path: str) -> bool:
 
 
 def page_headers(path: str, csp: str) -> list[tuple[bytes, bytes]]:
-    """The headers SPEC §10 adds outside ``/v1``: ``nosniff`` and the CSP, and
-    ``no-store`` on hosted API and bearer-secret reporter routes."""
+    """The headers SPEC §10 adds outside ``/v1``: ``nosniff`` and the CSP,
+    ``no-store`` on hosted API and bearer-secret reporter routes, and
+    ``Cross-Origin-Resource-Policy: same-origin`` on ``/p/`` (no other site may
+    embed a dashboard's responses, whatever authenticated them)."""
     if path == "/v1" or path.startswith("/v1/"):
         return []
     extra = [
@@ -135,6 +137,8 @@ def page_headers(path: str, csp: str) -> list[tuple[bytes, bytes]]:
         extra.append((b"cache-control", b"no-store"))
     if path == "/r" or path.startswith("/r/"):
         extra.append((b"referrer-policy", b"no-referrer"))
+    if path.startswith("/p/"):
+        extra.append((b"cross-origin-resource-policy", b"same-origin"))
     return extra
 
 

@@ -13,9 +13,12 @@ A request is identified only when all of these hold:
    read the dashboard with the visitor's identity; that site's requests carry
    its own name as ``Host``.
 2. It is not a cross-site subresource request: with ``Sec-Fetch-Site`` other
-   than ``same-origin`` or ``none``, only a navigation (``Sec-Fetch-Mode:
-   navigate``) is identified, so another site can link to a board but cannot
-   embed or fetch from it with the visitor's identity.
+   than ``same-origin`` or ``none``, only a top-level navigation
+   (``Sec-Fetch-Mode: navigate`` and ``Sec-Fetch-Dest: document``) is
+   identified, so another site can link to a board but cannot frame, embed or
+   fetch from it with the visitor's identity. Browsers that send no Fetch
+   Metadata are held back by ``Cross-Origin-Resource-Policy: same-origin`` on
+   ``/p/`` and ``frame-ancestors 'none'``.
 3. It came straight from the client: a request carrying ``X-Forwarded-For``
    is identified only with ``trust_forwarded``, because every process able to
    connect from a ``trusted_proxies`` address can write that header.
@@ -168,7 +171,9 @@ class TailnetResolver:
             return False
         site = _header(scope, b"sec-fetch-site").strip().lower()
         if site and site not in _SAME_ORIGIN_FETCH:
-            if _header(scope, b"sec-fetch-mode").strip().lower() != "navigate":
+            mode = _header(scope, b"sec-fetch-mode").strip().lower()
+            dest = _header(scope, b"sec-fetch-dest").strip().lower()
+            if mode != "navigate" or dest not in ("document", ""):
                 return False
         if not self.config.trust_forwarded and _has_header(scope, b"x-forwarded-for"):
             return False
@@ -282,7 +287,8 @@ class TailnetMiddleware:
             and _BROWSER_PATH_RE.fullmatch(path)
             and not (path == "/login" and scope.get("method") != "GET")
             and not _has_header(scope, b"authorization")
-            and not self._live_cookie(scope)
+            and self.resolver.request_eligible(scope)
+            and not self._live_cookie(scope)  # last: the costliest check
         ):
             try:
                 identity = await self.resolver.identify(scope)

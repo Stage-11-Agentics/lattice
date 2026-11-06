@@ -373,6 +373,14 @@ def parse_config(raw: Any) -> ServerConfig:
     kwargs["stream"] = stream
     if "tailnet" in raw:
         kwargs["tailnet"] = check_tailnet(raw["tailnet"])
+        if (
+            kwargs["tailnet"]
+            and kwargs["tailnet"].trust_forwarded
+            and not kwargs.get("trusted_proxies")
+        ):
+            raise ServerConfigError(
+                "tailnet.trust_forwarded needs trusted_proxies: no proxy is trusted to forward"
+            )
     return ServerConfig(**kwargs)
 
 
