@@ -594,27 +594,29 @@ def test_the_cli_fallback_kills_a_wrapper_and_its_child(
     monkeypatch, tmp_path: Path, no_localapi
 ) -> None:
     import os
+    import subprocess
     import time
 
-    pid_file = tmp_path / "child.pid"
-    cli = tmp_path / "tailscale"
-    # A wrapper that does not exec, as some installs ship: the real binary is a child.
-    cli.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {pid_file}\nwait\n")
+    # A wrapper that does not exec, as some installs ship: the real binary is a
+    # child. A unique sleep length marks it, so the check does not depend on
+    # how far the script got before the timeout (a loaded machine is slow).
+    marker = f"3{os.getpid() % 100000}.{time.monotonic_ns() % 1000}"
+    cli = tmp_path / "ts-cli"
+    cli.write_text(f"#!/bin/sh\nsleep {marker} &\nwait\n")
     cli.chmod(0o755)
-    monkeypatch.setattr(tailnet_mod, "CLI_TIMEOUT_SECONDS", 2.0)
+    monkeypatch.setattr(tailnet_mod, "CLI_TIMEOUT_SECONDS", 1.0)
     assert tailnet_mod.whois_route(str(cli)) == f"cli:{cli}"
     with pytest.raises(tailnet_mod.WhoisError, match="took over"):
         tailnet_mod.run_whois(str(cli), LAPTOP_IP)
-    child = int(pid_file.read_text())
+
+    def survivors() -> str:
+        found = subprocess.run(["pgrep", "-f", f"sleep {marker}"], capture_output=True, text=True)
+        return found.stdout.strip()
+
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            os.kill(child, 0)
-        except ProcessLookupError:
-            break
+    while survivors() and time.monotonic() < deadline:
         time.sleep(0.05)
-    else:
-        pytest.fail("the wrapped child outlived the timeout")
+    assert survivors() == "", "the wrapped child outlived the timeout"
 
 
 def test_the_cli_fallback_reads_answers_and_misses(monkeypatch, tmp_path: Path, no_localapi):
