@@ -159,8 +159,8 @@ class SessionStore:
         session = self._by_hash.get(hash_secret(cookie))
         if session is None or _expired(session.expires_at, _now()):
             raise unauthenticated()
-        token = self.tokens.get(session.token_id)
-        if token is None or token.revoked_at is not None:
+        token = self.tokens.live(session.token_id)
+        if token is None:
             raise unauthenticated()
         return session, token
 

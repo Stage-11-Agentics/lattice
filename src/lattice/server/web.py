@@ -195,14 +195,15 @@ CLEAR_COOKIE = "lattice_clear_session"
 
 def tailnet_session(request: Request, state: ServerState) -> tuple[Session, TokenRecord] | None:
     """The request's Tailscale identity as an unstored session, or ``None``.
-    The grant's token must exist, be unrevoked, and not be filing-only."""
+    The grant's token must pass the bearer rule (``TokenStore.live``) and not
+    be filing-only."""
     if request.headers.get("authorization") is not None:
         return None
     identity = request.scope.get("state", {}).get(TAILNET_STATE_KEY)
     if identity is None:
         return None
-    token = state.tokens.get(identity.grant.token)
-    if token is None or token.revoked_at is not None or token.filing_only:
+    token = state.tokens.live(identity.grant.token)
+    if token is None or token.filing_only:
         return None
     session = Session(
         sha256="", token_id=token.id, created_at="", expires_at="", tailnet_node=identity.node
@@ -358,9 +359,9 @@ async def logout(request: Request, state: ServerState) -> Response:
     require_origin(request, state)
     require_json(request)
     session, token = session_auth(request, state)
-    if session.tailnet_node is None:  # a tailnet visit has no stored session
+    if session.tailnet_node is None:  # a tailnet visit has no stored session to end
         await in_worker(lambda: state.sessions.delete(session))
-    state.log.info("logout", token_id=token.id)
+        state.log.info("logout", token_id=token.id)
     response = JSONResponse({"ok": True, "data": {"logged_out": True}})
     clear_session_cookie(response, secure=request_scheme(request, state) == "https")
     return response

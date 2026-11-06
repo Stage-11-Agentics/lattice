@@ -765,11 +765,20 @@ A directory is a **hosted root** when either holds:
     "hosts": ["board.tailnet.example:8740", "100.x.y.z:8740"],
     "nodes": [{"node": "laptop.tailnet.example", "login": "alice@example.com", "token": "tok_..."}],
     "tailscale": "tailscale",
-    "cache_seconds": 60
+    "cache_seconds": 60,
+    "trust_forwarded": false
   }
   ```
 
-  It applies only to requests without `Authorization` on the routes a session authenticates (`/`, `/login`, `/logout`, `/p/<slug>/...`, the stream), and only when (1) the `Host` header is listed in `hosts` (compared case-insensitively; this is the DNS-rebinding guard, since a rebound name arrives with its own `Host`), (2) the client address (the peer, or what a `trusted_proxies` peer forwarded, §8.1) is a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`), and (3) `tailscale whois` names a node whose MagicDNS name or StableID equals a grant's `node` and whose login equals that grant's `login`. The grant's `token` (an existing token id) then decides projects, the browser actor and revocation, as a session minted from it would; a missing, revoked or filing-only token authenticates nobody. A live session cookie comes first. Nothing is stored for a tailnet visit: the index says "through Tailscale (<node>)" and offers no log out. Answers are cached per address for `cache_seconds` (a failed lookup at most 10 seconds, logged as `tailnet_whois_failed`), and request log lines of such a visit carry `tailnet: <node>`. `hosts` and `nodes` must be non-empty; `tailscale` is the CLI to run (`PATH` by default). Writes keep the `Origin` check.
+  It applies only to requests without `Authorization` and without a live session cookie, on the routes a session authenticates (`/`, `GET /login`, `/logout`, `/p/<slug>/...`, the stream), and only when all of these hold:
+
+  1. The `Host` header, as the server receives it, is listed in `hosts` (compared case-insensitively). This is the DNS-rebinding guard: a name rebound to the server's address arrives with its own `Host`. List the names browsers use, never a value a proxy substitutes.
+  2. It is not a cross-site subresource request: with `Sec-Fetch-Site` present and neither `same-origin` nor `none`, only `Sec-Fetch-Mode: navigate` is identified. Another site can link to a board but cannot embed or fetch from it with the visitor's identity.
+  3. It carries no `X-Forwarded-For`, unless `trust_forwarded` is true. Every process able to connect from a `trusted_proxies` address can write that header, so trusting it makes every such process able to claim any granted device.
+  4. The client address is a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`): the peer, or with `trust_forwarded` the address a listed proxy forwarded (§8.1).
+  5. `tailscale whois` names a node whose MagicDNS name or StableID equals a grant's `node` and whose login equals that grant's `login`.
+
+  The grant's `token` (an existing token id) then decides projects, the browser actor and revocation, as a session minted from it would. A token that the bearer rule would refuse (revoked, missing, or with a restriction this server does not understand), or a filing-only one, authenticates nobody; such grants are logged as `tailnet_grant_unusable` at startup. The device is the principal: every process on a granted node, containers whose traffic leaves through its address included, is identified. Nothing is stored for a tailnet visit: the index says "through Tailscale (<node>)" and offers no log out, and `GET /login` on a listed host redirects a granted device onward. Answers are cached per address for `cache_seconds` (a failed lookup at most 10 seconds, logged as `tailnet_whois_failed`), and request log lines of such a visit carry `tailnet: <node>`. `hosts` and `nodes` must be non-empty; `tailscale` is the CLI to run (`PATH` by default). Writes keep the `Origin` check.
 - **Index:** `GET /` lists the projects the session's token may see, linking to each dashboard (AC-16). It uses the dashboard's stylesheet.
 
 ## 11. Moving a board

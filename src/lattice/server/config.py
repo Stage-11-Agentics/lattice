@@ -101,6 +101,10 @@ class TailnetConfig:
     tailscale: str = "tailscale"
     #: How long one address's answer is kept, in seconds.
     cache_seconds: float = 60.0
+    #: Identify requests that arrive through a ``trusted_proxies`` peer, by the
+    #: client address it forwards. Off: every process able to connect from a
+    #: listed proxy's address could then claim any device.
+    trust_forwarded: bool = False
 
 
 @dataclass(frozen=True)
@@ -200,7 +204,7 @@ def check_trusted_proxies(value: Any) -> tuple[str, ...]:
 
 
 _TOKEN_ID_RE = re.compile(r"^tok_[0-9A-Za-z]{1,64}$")
-_TAILNET_KEYS = {"hosts", "nodes", "tailscale", "cache_seconds"}
+_TAILNET_KEYS = {"hosts", "nodes", "tailscale", "cache_seconds", "trust_forwarded"}
 _GRANT_KEYS = {"node", "login", "token"}
 
 
@@ -240,6 +244,8 @@ def check_tailnet(raw: Any) -> TailnetConfig | None:
                 'each tailnet.nodes entry must be {"node": ..., "login": ..., "token": "tok_..."}'
             )
         node = _nonempty_str("tailnet.nodes[].node", entry["node"]).rstrip(".")
+        if not node:
+            raise ServerConfigError("tailnet.nodes[].node must name a node")
         login = _nonempty_str("tailnet.nodes[].login", entry["login"])
         token = _nonempty_str("tailnet.nodes[].token", entry["token"])
         if not _TOKEN_ID_RE.fullmatch(token):
@@ -261,6 +267,10 @@ def check_tailnet(raw: Any) -> TailnetConfig | None:
         ):
             raise ServerConfigError(f"tailnet.cache_seconds must be a number >= 0, got {value!r}")
         kwargs["cache_seconds"] = float(value)
+    if "trust_forwarded" in raw:
+        if not isinstance(raw["trust_forwarded"], bool):
+            raise ServerConfigError("tailnet.trust_forwarded must be true or false")
+        kwargs["trust_forwarded"] = raw["trust_forwarded"]
     return TailnetConfig(hosts=host_values, grants=tuple(grants), **kwargs)
 
 

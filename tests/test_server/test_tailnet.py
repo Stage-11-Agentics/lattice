@@ -1,13 +1,16 @@
 """SPEC §10: dashboard sign-in by Tailscale identity (``server.json`` ``tailnet``).
 
-The in-process server trusts 127.0.0.1 as a proxy, so a test presents a client
-address with ``X-Forwarded-For`` and a host with ``Host``; ``tailscale whois``
-is replaced by a table.
+The in-process server listens on loopback, so the ``direct`` fixture counts
+127.0.0.0/8 as the tailnet: a request then arrives straight from a "tailnet"
+peer, as a browser on a granted device reaches the server. ``tailscale whois``
+is replaced by a table. The forwarded path (a ``trusted_proxies`` peer and
+``X-Forwarded-For``) has its own tests.
 """
 
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -24,7 +27,7 @@ from lattice.server.tailnet import (
     parse_whois,
     tailnet_address,
 )
-from lattice.server.testing import ServerHandle, open_stream, running_server
+from lattice.server.testing import ServerHandle, open_stream, running_server, wait_for
 from tests.test_server.conftest import create_task, mint
 from tests.test_server.web_client import WebClient
 
@@ -36,151 +39,207 @@ def _tailnet_ip(offset: int) -> str:
 
 HOST = "board.test:8740"
 LAPTOP_IP = _tailnet_ip(0x250103)
-PHONE_IP = _tailnet_ip(0x250104)
-STRANGER_IP = _tailnet_ip(0x250105)
 LAPTOP = WhoisAnswer(node="laptop.example.ts.net", stable_id="nLAPTOP1CNTRL", login="alice@x.dev")
 PHONE = WhoisAnswer(node="phone.example.ts.net", stable_id="nPHONE1CNTRL", login="alice@x.dev")
 STRANGER = WhoisAnswer(node="laptop.example.ts.net", stable_id="nOTHER1CNTRL", login="eve@x.dev")
-
-
-def _visit(ip: str = LAPTOP_IP, host: str = HOST) -> dict[str, str]:
-    return {"Host": host, "X-Forwarded-For": ip}
+GRANT = {"node": "laptop.example.ts.net", "login": "alice@x.dev"}
 
 
 class Tailnet:
-    def __init__(self, server: ServerHandle, token_id: str, calls: list[str]) -> None:
+    """A running server with ``tailnet`` on, and the whois stub's state."""
+
+    def __init__(self, server: ServerHandle, token_id: str, who: dict, calls: list) -> None:
         self.server = server
         self.token_id = token_id
+        self.who = who  # who["answer"]: what whois says about every address
         self.calls = calls
 
-    def get(self, path: str, ip: str = LAPTOP_IP, host: str = HOST, **headers: str):
-        return WebClient(self.server).request("GET", path, headers={**_visit(ip, host), **headers})
+    def get(self, path: str, host: str = HOST, **headers: str):
+        return WebClient(self.server).request("GET", path, headers={"Host": host, **headers})
+
+
+def _stub_whois(monkeypatch: pytest.MonkeyPatch, who: dict, calls: list) -> None:
+    def fake(_tailscale: str, address: str) -> WhoisAnswer | None:
+        calls.append(address)
+        return who["answer"]
+
+    monkeypatch.setattr(tailnet_mod, "run_whois", fake)
 
 
 @pytest.fixture()
-def tailnet(root: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Tailnet]:
-    record = tokens.create_token(root, user="human:alice", machine="laptop", all_projects=True)
-    token_id = record["record"]["id"]
-    table = {LAPTOP_IP: LAPTOP, PHONE_IP: PHONE, STRANGER_IP: STRANGER}
-    calls: list[str] = []
-
-    def fake_whois(_tailscale: str, address: str) -> WhoisAnswer | None:
-        calls.append(address)
-        return table.get(address)
-
-    monkeypatch.setattr(tailnet_mod, "run_whois", fake_whois)
-    config = {
-        "trusted_proxies": ["127.0.0.1"],
-        "tailnet": {
-            "hosts": [HOST, "Board.Other"],
-            "nodes": [
-                {"node": "laptop.example.ts.net", "login": "alice@x.dev", "token": token_id}
-            ],
-        },
-    }
-    with running_server(root, config=config) as server:
-        yield Tailnet(server, token_id, calls)
+def direct(root: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Tailnet]:
+    token_id = tokens.create_token(root, user="human:alice", machine="laptop", all_projects=True)[
+        "record"
+    ]["id"]
+    monkeypatch.setattr(tailnet_mod, "TAILNET_V4", ipaddress.ip_network("127.0.0.0/8"))
+    who: dict = {"answer": LAPTOP}
+    calls: list = []
+    _stub_whois(monkeypatch, who, calls)
+    config = {"tailnet": {"hosts": [HOST, "Board.Other"], "nodes": [{**GRANT, "token": token_id}]}}
+    with running_server(root, config=config, heartbeat_seconds=0.2) as server:
+        yield Tailnet(server, token_id, who, calls)
 
 
-def test_a_granted_node_opens_the_dashboard_with_no_token_or_cookie(tailnet: Tailnet) -> None:
-    page = tailnet.get("/p/alpha/")
+def test_a_granted_node_opens_the_dashboard_with_no_token_or_cookie(direct: Tailnet) -> None:
+    page = direct.get("/p/alpha/")
     assert page.status == 200, page.text
     assert page.set_cookies() == []
-    assert tailnet.get("/p/alpha/api/tasks").status == 200
-    assert tailnet.get("/p/alpha/static/escape.js").status == 200
-    index = tailnet.get("/")
+    assert direct.get("/p/alpha/api/tasks").status == 200
+    assert direct.get("/p/alpha/static/escape.js").status == 200
+    index = direct.get("/")
     assert index.status == 200
-    assert "Signed in as human:alice (laptop) through Tailscale (laptop.example.ts.net)" in (
-        index.text
-    )
+    expected = "Signed in as human:alice (laptop) through Tailscale (laptop.example.ts.net)"
+    assert expected in index.text
     assert 'id="logout"' not in index.text
-    assert tailnet.get("/", host="board.other").status == 200  # Host compares case-insensitively
+    assert direct.get("/", host="board.other").status == 200  # Host compares case-insensitively
     lines = [
         line
-        for line in tailnet.server.log_lines
+        for line in direct.server.log_lines
         if line.get("event") == "request" and line.get("path") == "/p/alpha/"
     ]
     assert lines and lines[-1]["tailnet"] == "laptop.example.ts.net"
-    assert lines[-1]["token_id"] == tailnet.token_id
+    assert lines[-1]["token_id"] == direct.token_id
 
 
-def test_one_whois_serves_many_requests(tailnet: Tailnet) -> None:
+def test_one_whois_serves_many_requests(direct: Tailnet) -> None:
     for _ in range(5):
-        assert tailnet.get("/p/alpha/api/config").status == 200
-    assert tailnet.calls == [LAPTOP_IP]
+        assert direct.get("/p/alpha/api/config").status == 200
+    assert direct.calls == ["127.0.0.1"]
 
 
-def test_login_page_goes_straight_on_when_identified(tailnet: Tailnet) -> None:
-    response = tailnet.get("/login?next=/p/alpha/")
+def test_login_page_goes_straight_on_when_identified(direct: Tailnet) -> None:
+    response = direct.get("/login?next=/p/alpha/")
     assert response.status == 303
     assert response.headers["location"] == "/p/alpha/"
-    assert tailnet.get("/login?next=https://evil.example/").headers["location"] == "/"
+    assert direct.get("/login?next=https://evil.example/").headers["location"] == "/"
 
 
 @pytest.mark.parametrize(
-    ("ip", "host", "whois_runs"),
+    ("answer", "host", "headers", "whois_runs"),
     [
-        (LAPTOP_IP, "evil.example:8740", False),  # DNS rebinding: the attacker's Host
-        ("192.0.2.10", HOST, False),  # not a tailnet address
-        (PHONE_IP, HOST, True),  # a node no grant lists
-        (STRANGER_IP, HOST, True),  # the granted name, another login
+        (LAPTOP, "evil.example:8740", {}, False),  # DNS rebinding: the attacker's Host
+        (PHONE, HOST, {}, True),  # a node no grant lists
+        (STRANGER, HOST, {}, True),  # the granted name, another login
+        (None, HOST, {}, True),  # no node holds the address
+        (LAPTOP, HOST, {"X-Forwarded-For": LAPTOP_IP}, False),  # forwarded, not trusted
+        (LAPTOP, HOST, {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors"}, False),
+        (LAPTOP, HOST, {"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "cors"}, False),
     ],
 )
-def test_who_is_not_identified(tailnet: Tailnet, ip: str, host: str, whois_runs: bool) -> None:
-    response = tailnet.get("/p/alpha/", ip=ip, host=host)
+def test_who_is_not_identified(direct: Tailnet, answer, host, headers, whois_runs) -> None:
+    direct.who["answer"] = answer
+    response = direct.get("/p/alpha/", host=host, **headers)
     assert response.status == 303
     assert response.headers["location"] == "/login?next=/p/alpha/"
-    assert tailnet.get("/p/alpha/api/tasks", ip=ip, host=host).status == 401
-    assert tailnet.get("/login", ip=ip, host=host).status == 200
-    assert (ip in tailnet.calls) is whois_runs
+    assert direct.get("/p/alpha/api/tasks", host=host, **headers).status == 401
+    assert (direct.calls != []) is whois_runs
 
 
-def test_revoking_the_grants_token_ends_access_at_once(tailnet: Tailnet, root: Path) -> None:
-    assert tailnet.get("/p/alpha/").status == 200
-    tokens.revoke_token(root, tailnet.token_id)
-    assert tailnet.get("/p/alpha/").status == 303
+def test_another_site_may_link_to_a_board(direct: Tailnet) -> None:
+    headers = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"}
+    assert direct.get("/p/alpha/", **headers).status == 200
+    same = {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors"}
+    assert direct.get("/p/alpha/api/tasks", **same).status == 200
 
 
-def test_an_authorization_header_alone_decides(tailnet: Tailnet) -> None:
-    response = tailnet.get("/p/alpha/api/tasks", Authorization="Bearer lat_not-a-token")
+def test_a_non_tailnet_address_is_never_looked_up(root: Path, monkeypatch) -> None:
+    who: dict = {"answer": LAPTOP}
+    calls: list = []
+    _stub_whois(monkeypatch, who, calls)
+    grant = {
+        **GRANT,
+        "token": tokens.create_token(root, user="human:a", machine="m", all_projects=True)[
+            "record"
+        ]["id"],
+    }
+    config = {"tailnet": {"hosts": [HOST], "nodes": [grant]}}
+    with running_server(root, config=config) as server:
+        response = WebClient(server).request("GET", "/p/alpha/", headers={"Host": HOST})
+        assert response.status == 303
+    assert calls == []  # 127.0.0.1 is not in 100.64.0.0/10
+
+
+def test_revoking_the_grants_token_ends_access_at_once(direct: Tailnet, root: Path) -> None:
+    assert direct.get("/p/alpha/").status == 200
+    tokens.revoke_token(root, direct.token_id)
+    assert direct.get("/p/alpha/").status == 303
+
+
+def test_a_grant_token_the_bearer_rule_refuses_authenticates_nobody(
+    direct: Tailnet, root: Path
+) -> None:
+    """An ``only`` restriction without the ``only-v1:`` hash prefix (a hand edit,
+    version skew) is refused for a bearer, so it is refused here too."""
+    path = root / "tokens.json"
+    data = json.loads(path.read_text())
+    records = data["tokens"] if isinstance(data, dict) else data
+    for record in records:
+        if record["id"] == direct.token_id:
+            record["only"] = ["issue.comment"]
+    path.write_text(json.dumps(data, indent=2) + "\n")
+    assert direct.get("/p/alpha/api/tasks").status == 401
+
+
+def test_an_authorization_header_alone_decides(direct: Tailnet) -> None:
+    response = direct.get("/p/alpha/api/tasks", Authorization="Bearer lat_not-a-token")
     assert response.status == 401
-    assert tailnet.calls == []  # never resolved
+    assert direct.calls == []  # never resolved
 
 
-def test_dashboard_writes_still_need_this_servers_origin(tailnet: Tailnet, root: Path) -> None:
-    task = create_task(tailnet.server, mint(root))
-    web = WebClient(tailnet.server)
+def test_dashboard_writes_still_need_this_servers_origin(direct: Tailnet, root: Path) -> None:
+    task = create_task(direct.server, mint(root))
+    web = WebClient(direct.server)
     path = f"/p/alpha/api/tasks/{task['id']}/status"
     body = json.dumps({"status": "in_planning"}).encode()
     for origin, expected in (("http://evil.example", 403), (f"http://{HOST}", 200)):
-        headers = {**_visit(), "Content-Type": "application/json", "Origin": origin}
+        headers = {"Host": HOST, "Content-Type": "application/json", "Origin": origin}
         response = web.request("POST", path, body=body, headers=headers)
         assert response.status == expected, response.text
 
 
-def test_a_live_cookie_comes_before_the_tailnet_identity(tailnet: Tailnet, root: Path) -> None:
-    web = WebClient(tailnet.server)
+def test_a_live_cookie_comes_first_and_skips_the_lookup(direct: Tailnet, root: Path) -> None:
+    web = WebClient(direct.server)
     assert web.login(mint(root, user="human:bob")).status == 303
-    index = web.request("GET", "/", headers=_visit())
+    index = web.request("GET", "/", headers={"Host": HOST})
     assert "Signed in as human:bob" in index.text
     assert "Tailscale" not in index.text
+    assert direct.calls == []
 
 
-def test_a_dead_cookie_is_cleared_and_the_tailnet_identity_used(tailnet: Tailnet) -> None:
-    web = WebClient(tailnet.server, cookies={"lattice_session": "x" * 43})
-    response = web.request("GET", "/p/alpha/", headers=_visit())
+def test_a_dead_cookie_is_cleared_and_the_tailnet_identity_used(direct: Tailnet) -> None:
+    web = WebClient(direct.server, cookies={"lattice_session": "x" * 43})
+    response = web.request("GET", "/p/alpha/", headers={"Host": HOST})
     assert response.status == 200
     assert any("max-age=0" in c.lower() for c in response.set_cookies())
 
 
-def test_the_stream_follows_the_tailnet_identity(tailnet: Tailnet) -> None:
-    reader = open_stream(tailnet.server.url, "alpha", None, headers=_visit())
+def test_logout_on_a_tailnet_visit_changes_nothing(direct: Tailnet, root: Path) -> None:
+    before = (root / "web_sessions.json").exists()
+    headers = {"Host": HOST, "Content-Type": "application/json", "Origin": f"http://{HOST}"}
+    response = WebClient(direct.server).request("POST", "/logout", body=b"{}", headers=headers)
+    assert response.status == 200
+    assert (root / "web_sessions.json").exists() is before
+    assert not [line for line in direct.server.log_lines if line.get("event") == "logout"]
+
+
+def test_the_stream_follows_the_tailnet_identity(direct: Tailnet, root: Path) -> None:
+    reader = open_stream(direct.server.url, "alpha", None, headers={"Host": HOST})
     try:
         assert reader.status == 200
         assert reader.next(timeout=5) is not None
+        tokens.revoke_token(root, direct.token_id)  # the heartbeat recheck ends it
+
+        def ended() -> bool:
+            try:
+                return reader.next(timeout=1) is None  # None: the server closed it
+            except TimeoutError:
+                return False
+
+        assert wait_for(ended, timeout=10)
     finally:
         reader.close()
-    refused = open_stream(tailnet.server.url, "alpha", None, headers=_visit(ip=PHONE_IP))
+    direct.who["answer"] = PHONE
+    refused = open_stream(direct.server.url, "alpha", None, headers={"Host": "board.other"})
     try:
         assert refused.status == 401
     finally:
@@ -196,17 +255,45 @@ def test_a_filing_only_grant_authenticates_nobody(root: Path, monkeypatch) -> No
         only=("issue.file",),
         source="s",
     )
-    monkeypatch.setattr(tailnet_mod, "run_whois", lambda _t, _a: LAPTOP)
-    grant = {"node": LAPTOP.node, "login": LAPTOP.login, "token": record["record"]["id"]}
-    config = {"trusted_proxies": ["127.0.0.1"], "tailnet": {"hosts": [HOST], "nodes": [grant]}}
+    monkeypatch.setattr(tailnet_mod, "TAILNET_V4", ipaddress.ip_network("127.0.0.0/8"))
+    _stub_whois(monkeypatch, {"answer": LAPTOP}, [])
+    config = {"tailnet": {"hosts": [HOST], "nodes": [{**GRANT, "token": record["record"]["id"]}]}}
     with running_server(root, config=config) as server:
-        response = WebClient(server).request("GET", "/p/alpha/", headers=_visit())
+        response = WebClient(server).request("GET", "/p/alpha/", headers={"Host": HOST})
         assert response.status == 303
+        warned = [
+            line for line in server.log_lines if line.get("event") == "tailnet_grant_unusable"
+        ]
+        assert warned and warned[0]["token_id"] == record["record"]["id"]
+
+
+@pytest.mark.parametrize("trust", [False, True])
+def test_forwarded_requests_need_trust_forwarded(root: Path, monkeypatch, trust: bool) -> None:
+    """Any process able to connect from a ``trusted_proxies`` address can write
+    ``X-Forwarded-For``; only ``trust_forwarded`` lets it name the device."""
+    who: dict = {"answer": LAPTOP}
+    calls: list = []
+    _stub_whois(monkeypatch, who, calls)
+    grant = {
+        **GRANT,
+        "token": tokens.create_token(root, user="human:a", machine="m", all_projects=True)[
+            "record"
+        ]["id"],
+    }
+    config = {
+        "trusted_proxies": ["127.0.0.1"],
+        "tailnet": {"hosts": [HOST], "nodes": [grant], "trust_forwarded": trust},
+    }
+    with running_server(root, config=config) as server:
+        headers = {"Host": HOST, "X-Forwarded-For": LAPTOP_IP}
+        response = WebClient(server).request("GET", "/p/alpha/", headers=headers)
+        assert response.status == (200 if trust else 303)
+    assert calls == ([LAPTOP_IP] if trust else [])
 
 
 def test_without_the_section_nothing_is_resolved(server: ServerHandle, monkeypatch) -> None:
     monkeypatch.setattr(tailnet_mod, "run_whois", lambda *_: pytest.fail("whois ran"))
-    response = WebClient(server).request("GET", "/p/alpha/", headers=_visit())
+    response = WebClient(server).request("GET", "/p/alpha/", headers={"Host": HOST})
     assert response.status == 303
     assert server.state.tailnet is None
 
@@ -255,7 +342,7 @@ def _scope(ip: str = LAPTOP_IP) -> dict:
     return {"type": "http", "client": (ip, 1), "headers": [(b"host", HOST.encode())]}
 
 
-def test_a_grant_may_name_the_stable_id() -> None:
+def test_a_direct_tailnet_peer_is_identified_and_a_grant_may_name_the_stable_id() -> None:
     identity = asyncio.run(_resolver(lambda _a: LAPTOP).identify(_scope()))
     assert identity is not None and identity.node == LAPTOP.node
 
@@ -301,6 +388,14 @@ def test_cache_seconds_zero_asks_every_time() -> None:
     assert len(calls) == 3
 
 
+def test_the_cache_stays_bounded(monkeypatch) -> None:
+    monkeypatch.setattr(tailnet_mod, "_CACHE_MAX", 4)
+    resolver = _resolver(lambda _a: LAPTOP)
+    for offset in range(10):
+        assert asyncio.run(resolver.identify(_scope(_tailnet_ip(offset + 1))))
+    assert len(resolver._cache) <= 4
+
+
 GOOD = {
     "hosts": ["b:1"],
     "nodes": [{"node": "n.tailnet.example.", "login": "a@b", "token": "tok_A1"}],
@@ -312,6 +407,8 @@ def test_check_tailnet_accepts_a_good_section() -> None:
     assert config is not None
     assert config.grants[0].node == "n.tailnet.example"  # trailing dot dropped
     assert config.cache_seconds == 60.0 and config.tailscale == "tailscale"
+    assert config.trust_forwarded is False
+    assert check_tailnet({**GOOD, "trust_forwarded": True}).trust_forwarded is True
     assert check_tailnet(None) is None
 
 
@@ -325,8 +422,10 @@ def test_check_tailnet_accepts_a_good_section() -> None:
         {**GOOD, "nodes": []},
         {**GOOD, "nodes": [{"node": "n", "login": "a@b"}]},
         {**GOOD, "nodes": [{"node": "n", "login": "a@b", "token": "secret-token"}]},
+        {**GOOD, "nodes": [{"node": ".", "login": "a@b", "token": "tok_A1"}]},
         {**GOOD, "cache_seconds": -1},
         {**GOOD, "tailscale": ""},
+        {**GOOD, "trust_forwarded": "yes"},
     ],
 )
 def test_check_tailnet_refuses_mistakes(bad) -> None:

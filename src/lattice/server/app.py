@@ -1539,8 +1539,8 @@ async def stream(request: Request, state: ServerState) -> Response:
             elif session is None or session.tailnet_node is None:
                 _session, current = state.sessions.authenticate(cookie)
             else:
-                current = state.tokens.get(session.token_id)
-                if current is None or current.revoked_at is not None or current.filing_only:
+                current = state.tokens.live(session.token_id)
+                if current is None or current.filing_only:
                     return False
         except OpError:
             return False
@@ -1617,6 +1617,13 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
             projects=len(state.registry.slugs()),
             **({"fd_limit": state.fd_limit} if state.fd_limit is not None else {}),
         )
+        if state.tailnet is not None:
+            for grant in config.tailnet.grants:
+                token = state.tokens.live(grant.token)
+                if token is None or token.filing_only:
+                    state.log.warning(
+                        "tailnet_grant_unusable", node=grant.node, token_id=grant.token
+                    )
         state.registry.start()
         try:
             yield
@@ -1719,5 +1726,8 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.lattice = state
     return HeadersMiddleware(
-        FilingTokenGuard(TailnetMiddleware(app, state.tailnet, state.log), state.tokens), state
+        FilingTokenGuard(
+            TailnetMiddleware(app, state.tailnet, state.sessions, state.log), state.tokens
+        ),
+        state,
     )

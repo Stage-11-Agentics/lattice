@@ -12,12 +12,22 @@ A request is identified only when all of these hold:
    site whose name was rebound to the server's address (DNS rebinding) could
    read the dashboard with the visitor's identity; that site's requests carry
    its own name as ``Host``.
-2. Its client address is a Tailscale address (``100.64.0.0/10`` or
-   ``fd7a:115c:a1e0::/48``). The client address is the peer, or what a listed
-   ``trusted_proxies`` peer forwarded (SPEC §8.1).
-3. ``tailscale whois`` names a node and login that a grant lists. The grant's
+2. It is not a cross-site subresource request: with ``Sec-Fetch-Site`` other
+   than ``same-origin`` or ``none``, only a navigation (``Sec-Fetch-Mode:
+   navigate``) is identified, so another site can link to a board but cannot
+   embed or fetch from it with the visitor's identity.
+3. It came straight from the client: a request carrying ``X-Forwarded-For``
+   is identified only with ``trust_forwarded``, because every process able to
+   connect from a ``trusted_proxies`` address can write that header.
+4. Its client address is a Tailscale address (``100.64.0.0/10`` or
+   ``fd7a:115c:a1e0::/48``): the peer, or with ``trust_forwarded`` what a
+   listed proxy forwarded (SPEC §8.1).
+5. ``tailscale whois`` names a node and login that a grant lists. The grant's
    token decides projects, the browser actor and revocation, exactly as a
    session minted from that token would.
+
+The device is the principal: every process on a granted node (local agents,
+containers whose traffic leaves through its tailnet address) is identified.
 
 Answers are cached per address for ``cache_seconds`` (a failed lookup for at
 most :data:`FAILURE_SECONDS`), and concurrent misses for one address share
@@ -50,7 +60,8 @@ TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 WHOIS_TIMEOUT_SECONDS = 3.0
 #: The longest a failed lookup (tailscaled down, a timeout) is remembered.
 FAILURE_SECONDS = 10.0
-_CACHE_PRUNE_AT = 1024
+_CACHE_MAX = 1024
+_SAME_ORIGIN_FETCH = frozenset({"same-origin", "none"})
 
 #: The routes a session authenticates (SPEC §10), the only ones resolved.
 _BROWSER_PATH_RE = re.compile(r"^(/|/login|/logout|/p/.*|/v1/projects/[^/]+/stream)$")
@@ -149,10 +160,19 @@ class TailnetResolver:
         self._inflight: dict[str, asyncio.Future] = {}
 
     def host_allowed(self, scope: Scope) -> bool:
-        for name, value in scope.get("headers") or ():
-            if name.lower() == b"host":
-                return value.decode("latin-1").strip().lower() in self.hosts
-        return False
+        return _header(scope, b"host").strip().lower() in self.hosts
+
+    def request_eligible(self, scope: Scope) -> bool:
+        """Rules 1 to 3 of the module docstring: everything but the address."""
+        if not self.host_allowed(scope):
+            return False
+        site = _header(scope, b"sec-fetch-site").strip().lower()
+        if site and site not in _SAME_ORIGIN_FETCH:
+            if _header(scope, b"sec-fetch-mode").strip().lower() != "navigate":
+                return False
+        if not self.config.trust_forwarded and _has_header(scope, b"x-forwarded-for"):
+            return False
+        return True
 
     def match(self, answer: WhoisAnswer) -> TailnetGrant | None:
         for grant in self.config.grants:
@@ -165,7 +185,7 @@ class TailnetResolver:
 
     async def identify(self, scope: Scope) -> TailnetIdentity | None:
         """The request's identity, or ``None`` (never raises for a lookup failure)."""
-        if not self.host_allowed(scope):
+        if not self.request_eligible(scope):
             return None
         client = scope.get("client")
         address = tailnet_address(client[0] if client else None)
@@ -205,31 +225,64 @@ class TailnetResolver:
                 future.set_result(answer)
 
     def _remember(self, address: str, answer: WhoisAnswer | None, ttl: float) -> None:
+        if ttl <= 0:
+            return
         now = self._clock()
-        if len(self._cache) >= _CACHE_PRUNE_AT:
+        if len(self._cache) >= _CACHE_MAX:
             self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
-        if ttl > 0:
-            self._cache[address] = (now + ttl, answer)
+            while len(self._cache) >= _CACHE_MAX:  # still full: drop the soonest to expire
+                del self._cache[min(self._cache, key=lambda k: self._cache[k][0])]
+        self._cache[address] = (now + ttl, answer)
 
 
-def _has_authorization(scope: Scope) -> bool:
-    return any(name.lower() == b"authorization" for name, _ in scope.get("headers") or ())
+def _header(scope: Scope, name: bytes) -> str:
+    for key, value in scope.get("headers") or ():
+        if key.lower() == name:
+            return value.decode("latin-1")
+    return ""
+
+
+def _has_header(scope: Scope, name: bytes) -> bool:
+    return any(key.lower() == name for key, _ in scope.get("headers") or ())
 
 
 class TailnetMiddleware:
-    """Resolve the Tailscale identity of a browser request into its scope."""
+    """Resolve the Tailscale identity of a browser request into its scope:
+    only on the routes a session authenticates (``/login`` for GET only), only
+    without ``Authorization``, and only when no live session cookie came along
+    (the cookie wins, so the lookup would be wasted)."""
 
-    def __init__(self, app: ASGIApp, resolver: TailnetResolver | None, log: Any) -> None:
+    def __init__(
+        self, app: ASGIApp, resolver: TailnetResolver | None, sessions: Any, log: Any
+    ) -> None:
         self.app = app
         self.resolver = resolver
+        self.sessions = sessions
         self.log = log
 
+    def _live_cookie(self, scope: Scope) -> bool:
+        from starlette.requests import cookie_parser
+
+        from lattice.core.errors import OpError
+        from lattice.server.sessions import COOKIE_NAME
+
+        cookie = cookie_parser(_header(scope, b"cookie")).get(COOKIE_NAME)
+        if cookie is None:
+            return False
+        try:
+            self.sessions.authenticate(cookie)
+        except OpError:
+            return False
+        return True
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = scope.get("path", "") if scope["type"] == "http" else ""
         if (
             self.resolver is not None
-            and scope["type"] == "http"
-            and _BROWSER_PATH_RE.fullmatch(scope.get("path", ""))
-            and not _has_authorization(scope)
+            and _BROWSER_PATH_RE.fullmatch(path)
+            and not (path == "/login" and scope.get("method") != "GET")
+            and not _has_header(scope, b"authorization")
+            and not self._live_cookie(scope)
         ):
             try:
                 identity = await self.resolver.identify(scope)

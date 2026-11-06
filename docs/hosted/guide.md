@@ -717,7 +717,7 @@ Writes from the hosted page are ordinary operations with the session's token, as
 **Signing in from the tailnet.** On a Tailscale network, the server can recognize your own devices, so their browsers open every board with no token and no cookie: through restarts, after the browser closes, in any browser on the device, and on every host name you list. Each device is granted a token you already have; that token decides which projects it sees, and revoking it ends the device's access at once.
 
 1. Find each device's MagicDNS name and login with `tailscale whois <its tailnet address>` (or `tailscale status`), and pick its token id from `lattice server token list`. Prefer one token per device, minted with that device's `--machine`.
-2. Add the section to `server.json`, listing every `Host` your browsers use for the server: the MagicDNS name, the short name, the tailnet address, each with the port, and a proxy's name if one fronts the server on the tailnet:
+2. Add the section to `server.json`, listing every `Host` your browsers use to reach the server directly: the MagicDNS name, the short name and the tailnet address, each with the port:
 
    ```json
    "tailnet": {
@@ -731,7 +731,9 @@ Writes from the hosted page are ordinary operations with the session's token, as
 
 3. Restart the server. The server user must be able to run `tailscale whois` (set `tailscale` to the CLI's full path if the service's `PATH` lacks it). Open `http://board.tailnet.example:8740/`: the index says "Signed in as ... through Tailscale (laptop.tailnet.example)".
 
-Grant devices, not logins: a login also covers every server and container registered under it. List only hosts that reach the server directly over the tailnet, or through a proxy in `trusted_proxies` that sets `X-Forwarded-For` to the real client. Never list a host reached through a public door: the `Host` list is what keeps another site, or a name rebound to the server's address, from borrowing a visitor's identity. Without the section, or from any other device, the token login works as before.
+Grant devices, not logins: a login also covers every server and container registered under it. The device is the principal: every process on a granted device, including containers whose traffic leaves through its tailnet address, opens the dashboard as that token. List the `Host` values browsers send, never one a proxy substitutes: the list is what keeps another site, or a name rebound to the server's address, from borrowing a visitor's identity. Never list a host reached through a public door.
+
+Requests that come through a reverse proxy (they carry `X-Forwarded-For`) are not identified unless you add `"trust_forwarded": true`. Do that only when every process able to connect from your `trusted_proxies` addresses is trusted, because any of them could then claim any granted device. On those hosts, the token login works as before, and its session lasts 30 days. Without the section, or from any other device, the token login works as before.
 
 Behind a proxy that rewrites `Host`, list the public origin in `public_origins` (section 6); without it, logins and writes are refused by the `Origin` check. Under the hosted page's content policy, a dashboard background image from another site does not load. Moving a task in either dashboard starts no automatic review (section 13).
 
