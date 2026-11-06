@@ -257,14 +257,68 @@ def test_an_unavailable_board_is_still_listed(server, token, web) -> None:
     project = server.project("alpha")
     with project.locked():
         project._mark_unavailable("test quarantine")
-    page = web.get("/").text
-    found = {r["slug"]: r for r in rows(page)}
+    try:
+        page = web.get("/").text
+        found = {r["slug"]: r for r in rows(page)}
+        assert found["alpha"]["state"] == "unavailable"
+        # Unavailable boards sort last, after boards with no edit yet (beta is empty).
+        assert [r["slug"] for r in rows(page)] == ["beta", "alpha"]
+        assert "Unavailable" in page
+    finally:
+        with project.locked():
+            project.release()
+
+
+def test_a_board_that_fails_to_summarize_is_logged_and_the_rest_still_show(
+    server, token, web, monkeypatch
+) -> None:
+    create_task(server, token, "beta")
+    original = overview.summarize_board
+
+    def broken(board: Path) -> overview.BoardSummary:
+        if board.parent.name == "alpha":
+            raise RuntimeError("corrupt log")
+        return original(board)
+
+    monkeypatch.setattr(overview, "summarize_board", broken)
+    page = web.get("/")
+    assert page.status == 200
+    found = {r["slug"]: r for r in rows(page.text)}
     assert found["alpha"]["state"] == "unavailable"
-    # Unavailable boards sort last, after boards with no edit yet (beta is empty).
-    assert [r["slug"] for r in rows(page)] == ["beta", "alpha"]
-    assert "Unavailable" in page
-    with project.locked():
-        project.release()
+    assert found["beta"]["tickets"] == "1"
+    assert '<span class="code">ALP</span>' in page.text  # the code still reads
+    failed = [line for line in server.log_lines if line.get("event") == "overview_board_failed"]
+    assert failed and failed[0]["project"] == "alpha" and "corrupt log" in failed[0]["error"]
+
+
+def test_a_board_whose_admission_fails_is_logged(server, token, web, monkeypatch) -> None:
+    from lattice.core.errors import OpError
+
+    project = server.project("alpha")
+
+    def refuse() -> None:
+        raise OpError("BOARD_UNAVAILABLE", "test refusal")
+
+    monkeypatch.setattr(project, "admit", refuse)
+    found = {r["slug"]: r for r in rows(web.get("/").text)}
+    assert found["alpha"]["state"] == "unavailable"
+    skipped = [line for line in server.log_lines if line.get("event") == "overview_board_skipped"]
+    assert skipped and skipped[0]["error_code"] == "BOARD_UNAVAILABLE"
+
+
+def test_erased_tasks_leave_the_counts_but_stay_an_edit(server, token, web, clock) -> None:
+    clock.set(-30)
+    create_task(server, token, "alpha")
+    gone = create_task(server, token, "alpha")
+    clock.set(-10)
+    status, _, body = server.op(
+        "alpha", "task.erase", {"task": gone["id"], "reason": "test"}, token=token
+    )
+    assert status == 200, body
+    alpha = next(r for r in rows(web.get("/").text) if r["slug"] == "alpha")
+    assert alpha["tickets"] == "1" and alpha["updated-24h"] == "1"
+    erased_at = datetime.fromtimestamp(clock.base - 10, timezone.utc)
+    assert alpha["last-edit"] == erased_at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------

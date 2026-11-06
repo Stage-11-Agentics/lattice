@@ -71,7 +71,10 @@ def parse_ts(value: object) -> float | None:
 
 
 def summarize_board(board: Path) -> BoardSummary:
-    """Read *board*'s task authorities (call under the project's work lock)."""
+    """Read *board*'s task authorities (call under the project's work lock).
+    Erased tasks leave the ticket and 24-hour counts, as they leave every default
+    view; erasing, like archiving, still counts as the board's last edit."""
+    from lattice.core.visibility import is_tombstoned
     from lattice.storage.operations import discover_task_authorities
 
     updated: list[float] = []
@@ -81,7 +84,7 @@ def summarize_board(board: Path) -> BoardSummary:
         stamp = parse_ts(authority.snapshot.get("updated_at"))
         if stamp is not None and (last_edit is None or stamp > last_edit):
             last_edit = stamp
-        if authority.location != "active":
+        if authority.location != "active" or is_tombstoned(authority.snapshot):
             continue
         tickets += 1
         if stamp is not None:
@@ -155,7 +158,9 @@ def bar_height(count: int) -> int:
 class Row:
     slug: str
     code: str | None
-    summary: BoardSummary | None  # None: the board is unavailable
+    summary: BoardSummary | None  # None: the board could not be read now
+    #: Why there is no summary: ``busy`` (its lock timed out) or ``unavailable``.
+    state: str = "unavailable"
 
 
 def sort_rows(rows: Sequence[Row], sort: str) -> list[Row]:
@@ -219,11 +224,13 @@ def _row(index: int, row: Row, at: float) -> str:
     code = html.escape(row.code or "")
     summary = row.summary
     if summary is None:
-        data = f'data-slug="{slug}" data-state="unavailable"'
+        state = "busy" if row.state == "busy" else "unavailable"
+        data = f'data-slug="{slug}" data-state="{state}"'
+        label = f"{row.slug}, {row.code + ', ' if row.code else ''}{state}"
         cells = (
             _n(None, "tickets", "tot")
             + _n(None, "24h", "day")
-            + '<span class="mkc"><span class="pl">Unavailable</span></span>'
+            + f'<span class="mkc"><span class="pl">{state.capitalize()}</span></span>'
             + '<span class="ago">—</span>'
         )
     else:
@@ -242,6 +249,10 @@ def _row(index: int, row: Row, at: float) -> str:
             if last
             else '<span class="ago">—</span>'
         )
+        label = (
+            f"{row.slug}, {row.code + ', ' if row.code else ''}{summary.tickets:,} tickets, "
+            f"{day:,} updated in the last 24 hours, last edit {age if last else 'never'}"
+        )
         cells = (
             _n(summary.tickets, "tickets", "tot")
             + day_cell
@@ -251,7 +262,7 @@ def _row(index: int, row: Row, at: float) -> str:
             + ago
         )
     return (
-        f'<a class="row bk" href="/p/{slug}/" {data}>{_TK}'
+        f'<a class="row bk" href="/p/{slug}/" {data} aria-label="{html.escape(label)}">{_TK}'
         f'<span class="ix">{index:02d}</span>'
         f'<span class="name">{slug}</span>'
         f'<span class="code">{code}</span>'
@@ -444,19 +455,19 @@ padding:8px 16px calc(8px + env(safe-area-inset-bottom))}
 .seg a{flex:1 1 0;width:auto;font-size:11px;line-height:44px}
 .tbl{margin:0}
 .th{display:none}
-.row{height:64px;row-gap:6px;align-content:center;grid-template-columns:auto auto auto minmax(0,1fr);
-grid-template-areas:"name name name ago" "code tot day mark"}
+.row{display:flex;flex-wrap:wrap;align-items:center;align-content:center;column-gap:12px;row-gap:3px;height:64px}
+.row::before{content:"";order:3;flex-basis:100%;height:0}
 .ix{display:none}
-.name{font-size:15px}
-.code{font-size:10px;min-width:40px}
+.name{order:1;flex:1 1 0;min-width:0;font-size:15px}
+.ago{order:2;flex:none;font-size:11px}
+.code{order:4;flex:0 1 auto;min-width:0;max-width:56px;font-size:10px;text-overflow:ellipsis}
+.tot{order:5;flex:none}.day{order:6;flex:none}
 .n{font-size:12px;line-height:16px;text-align:left}
 .n small{display:inline}
-.ago{font-size:11px}
-.mkc{justify-self:end}
-.row .mk{height:16px}
-.row .mk b{width:5px}
+.mkc{order:7;flex:1 1 0;min-width:0;display:flex;justify-content:flex-end;overflow:hidden}
+.row .mk{height:16px;width:96px;max-width:100%;gap:1px}
+.row .mk b{flex:1 1 0;width:auto;min-width:2px}
 .bottom{flex-wrap:wrap}
 .btn{line-height:44px;padding:0 16px}
 }
-@media (max-width:360px){.row .mk b{width:4px}.row{column-gap:12px}}
 """

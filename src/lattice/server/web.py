@@ -392,7 +392,10 @@ async def index(request: Request, state: ServerState) -> Response:
         if loaded:
             try:
                 project.admit()  # hand edits journaled first, as /v1/projects does
-            except OpError:
+            except OpError as exc:
+                state.log.warning(
+                    "overview_board_skipped", project=project.slug, error_code=exc.code
+                )
                 loaded = False
         code = overview.project_code(project.board)
         journal = project.journal
@@ -421,8 +424,11 @@ async def index(request: Request, state: ServerState) -> Response:
             code, summary = await state.registry.run_locked(
                 project, lambda p=project: summarize(p), admit=False
             )
-        except OpError:
-            code, summary = None, None
+        except OpError as exc:  # its lock timed out, or it failed to load
+            state.log.warning("overview_board_skipped", project=slug, error_code=exc.code)
+            busy = "busy" if exc.code == "BOARD_BUSY" else "unavailable"
+            rows.append(overview.Row(slug=slug, code=None, summary=None, state=busy))
+            continue
         rows.append(overview.Row(slug=slug, code=code, summary=summary))
 
     signed_in = f"Signed in as {token.user} ({token.machine})"
