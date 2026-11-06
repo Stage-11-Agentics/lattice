@@ -146,6 +146,27 @@ def test_sort_by_last_edit_is_the_default_and_name_is_a_link(server, token, web,
     assert [r["slug"] for r in rows(page)] == ["alpha", "beta"]
     assert '<a href="/?sort=name" aria-current="true">' in page
     assert '<a class="bk" href="/?sort=edited">' in page
+    assert '<a class="bk" href="/?sort=tickets">' in page
+
+
+def test_sort_by_tickets_puts_the_largest_board_first(server, token, web, clock) -> None:
+    clock.set(-30)
+    create_task(server, token, "beta")
+    create_task(server, token, "beta")
+    clock.set(-10)
+    create_task(server, token, "alpha")  # alpha edited last, but beta is larger
+    assert [r["slug"] for r in rows(web.get("/").text)] == ["alpha", "beta"]
+    page = web.get("/?sort=tickets").text
+    assert [r["slug"] for r in rows(page)] == ["beta", "alpha"]
+    assert '<a href="/?sort=tickets" aria-current="true">' in page
+
+
+def test_the_server_name_completes_the_subtitle(root: Path) -> None:
+    from lattice.server.testing import running_server
+
+    with running_server(root, config={"name": "Studio <one>"}) as named:
+        page = _logged_in(named, mint(root)).get("/").text
+    assert '<p class="sub">Projects on Studio &lt;one&gt;</p>' in page
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +236,10 @@ def test_the_page_shape(web) -> None:
     text = page.text
     assert page.headers["content-type"].startswith("text/html")
     assert "<title>Lattice projects</title>" in text
-    assert "<h1>Projects</h1>" in text
+    assert '<h1 class="brand">Lattice</h1>' in text
+    assert '<p class="sub">Projects</p>' in text  # this server has no name
+    # The sign-in line sits below the boards, the sort control above them.
+    assert text.index('class="seg"') < text.index('class="tbl"') < text.index("Signed in as")
     # No network: every asset is this server's own.
     assert not re.search(r'(?:src|href)="(?:https?:)?//', text)
     assert '<script src="/web/overview.js"></script>' in text

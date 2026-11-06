@@ -117,6 +117,8 @@ class ServerConfig:
     trusted_proxies: tuple[str, ...] = ()
     public_origins: tuple[str, ...] = ()
     log_level: str = "info"
+    #: The server's display name on the projects overview ("Projects on <name>").
+    name: str | None = None
     audit: AuditConfig = field(default_factory=AuditConfig)
     limits: Limits = field(default_factory=Limits)
     stream: StreamConfig = field(default_factory=StreamConfig)
@@ -345,6 +347,18 @@ def parse_config(raw: Any) -> ServerConfig:
         if not isinstance(origins, list) or not all(isinstance(o, str) for o in origins):
             raise ServerConfigError("public_origins must be a list of origins")
         kwargs["public_origins"] = tuple(origins)
+    if "name" in raw:
+        name = raw["name"]
+        if name is not None and (
+            not isinstance(name, str)
+            or not 1 <= len(name) <= 64
+            or not name.isprintable()
+            or name != name.strip()
+        ):
+            raise ServerConfigError(
+                "name must be null or 1 to 64 printable characters without surrounding spaces"
+            )
+        kwargs["name"] = name
     if "log_level" in raw:
         if raw["log_level"] not in LOG_LEVELS:
             raise ServerConfigError(f"log_level must be one of {', '.join(LOG_LEVELS)}")
