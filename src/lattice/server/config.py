@@ -105,6 +105,8 @@ class TailnetConfig:
     #: client address it forwards. Off: every process able to connect from a
     #: listed proxy's address could then claim any device.
     trust_forwarded: bool = False
+    #: Ask tailscaled's LocalAPI in-process when found (else always the CLI).
+    localapi: bool = True
 
 
 @dataclass(frozen=True)
@@ -204,7 +206,7 @@ def check_trusted_proxies(value: Any) -> tuple[str, ...]:
 
 
 _TOKEN_ID_RE = re.compile(r"^tok_[0-9A-Za-z]{1,64}$")
-_TAILNET_KEYS = {"hosts", "nodes", "tailscale", "cache_seconds", "trust_forwarded"}
+_TAILNET_KEYS = {"hosts", "nodes", "tailscale", "cache_seconds", "trust_forwarded", "localapi"}
 _GRANT_KEYS = {"node", "login", "token"}
 
 
@@ -267,10 +269,11 @@ def check_tailnet(raw: Any) -> TailnetConfig | None:
         ):
             raise ServerConfigError(f"tailnet.cache_seconds must be a number >= 0, got {value!r}")
         kwargs["cache_seconds"] = float(value)
-    if "trust_forwarded" in raw:
-        if not isinstance(raw["trust_forwarded"], bool):
-            raise ServerConfigError("tailnet.trust_forwarded must be true or false")
-        kwargs["trust_forwarded"] = raw["trust_forwarded"]
+    for flag in ("trust_forwarded", "localapi"):
+        if flag in raw:
+            if not isinstance(raw[flag], bool):
+                raise ServerConfigError(f"tailnet.{flag} must be true or false")
+            kwargs[flag] = raw[flag]
     return TailnetConfig(hosts=host_values, grants=tuple(grants), **kwargs)
 
 

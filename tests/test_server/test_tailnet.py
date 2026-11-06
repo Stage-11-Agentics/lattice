@@ -59,7 +59,7 @@ class Tailnet:
 
 
 def _stub_whois(monkeypatch: pytest.MonkeyPatch, who: dict, calls: list) -> None:
-    def fake(_tailscale: str, address: str) -> WhoisAnswer | None:
+    def fake(_tailscale: str, address: str, **_kw) -> WhoisAnswer | None:
         calls.append(address)
         return who["answer"]
 
@@ -326,7 +326,7 @@ def test_forwarded_requests_need_trust_forwarded(root: Path, monkeypatch, trust:
 
 
 def test_without_the_section_nothing_is_resolved(server: ServerHandle, monkeypatch) -> None:
-    monkeypatch.setattr(tailnet_mod, "run_whois", lambda *_: pytest.fail("whois ran"))
+    monkeypatch.setattr(tailnet_mod, "run_whois", lambda *_, **__: pytest.fail("whois ran"))
     response = WebClient(server).request("GET", "/p/alpha/", headers={"Host": HOST})
     assert response.status == 303
     assert server.state.tailnet is None
@@ -476,3 +476,257 @@ def test_trust_forwarded_needs_a_trusted_proxy() -> None:
         {"trusted_proxies": ["192.0.2.1"], "tailnet": {**GOOD, "trust_forwarded": True}}
     )
     assert config.tailnet is not None and config.tailnet.trust_forwarded
+
+
+# ---------------------------------------------------------------------------
+# How whois asks: tailscaled's LocalAPI in-process, else the CLI
+# ---------------------------------------------------------------------------
+
+WHOIS_JSON = json.dumps(
+    {
+        "Node": {"Name": "laptop.example.ts.net.", "StableID": "nLAPTOP1CNTRL"},
+        "UserProfile": {"LoginName": "alice@x.dev"},
+    }
+).encode()
+
+
+class _LocalAPIHandler:
+    """A fake LocalAPI: records each request's path and headers."""
+
+    seen: list[tuple[str, dict]] = []
+    status = 200
+
+    @classmethod
+    def build(cls):
+        import http.server
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - the stdlib's name
+                cls.seen.append((self.path, dict(self.headers)))
+                body = WHOIS_JSON if cls.status == 200 else b"no match"
+                self.send_response(cls.status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args) -> None:
+                pass
+
+        return Handler
+
+
+@pytest.fixture()
+def no_localapi(monkeypatch, tmp_path: Path) -> None:
+    """No LocalAPI unless a test makes one; files this test user owns count as
+    tailscaled's (in production only root's do)."""
+    import os
+
+    monkeypatch.setattr(tailnet_mod, "LOCALAPI_SOCKETS", ())
+    monkeypatch.setattr(tailnet_mod, "MACOS_LOCALAPI_DIR", tmp_path / "absent")
+    monkeypatch.setattr(tailnet_mod, "_TRUSTED_OWNER_UIDS", (0, os.getuid()))
+
+
+def test_whois_asks_the_localapi_unix_socket(monkeypatch, no_localapi) -> None:
+    import socketserver
+    import tempfile
+    import threading
+
+    class UnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+        daemon_threads = True
+
+        def get_request(self):  # BaseHTTPRequestHandler wants a client address
+            sock, _ = super().get_request()
+            return sock, ("local", 0)
+
+    folder = Path(tempfile.mkdtemp(dir="/tmp"))  # a unix socket path must stay short
+    path = folder / "tailscaled.sock"
+    _LocalAPIHandler.seen, _LocalAPIHandler.status = [], 200
+    server = UnixServer(str(path), _LocalAPIHandler.build())
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setattr(tailnet_mod, "LOCALAPI_SOCKETS", ("/nonexistent.sock", str(path)))
+        assert tailnet_mod.whois_route("tailscale") == "localapi-unix"
+        assert tailnet_mod.run_whois("/no/such/cli", LAPTOP_IP) == LAPTOP
+        assert _LocalAPIHandler.seen[0][0] == f"/localapi/v0/whois?addr={LAPTOP_IP}"
+        assert _LocalAPIHandler.seen[0][1]["Sec-Tailscale"] == "localapi"
+        _LocalAPIHandler.status = 404
+        assert tailnet_mod.run_whois("/no/such/cli", LAPTOP_IP) is None
+        _LocalAPIHandler.status = 500
+        with pytest.raises(tailnet_mod.WhoisError, match="HTTP 500"):
+            tailnet_mod.run_whois("/no/such/cli", LAPTOP_IP)
+        assert tailnet_mod.whois_route("ts", localapi=False) == "cli:ts"
+    finally:
+        server.shutdown()
+        server.server_close()
+        import shutil
+
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_whois_asks_the_macos_localapi_port_with_its_token(
+    monkeypatch, tmp_path: Path, no_localapi
+) -> None:
+    import base64
+    import http.server
+    import threading
+
+    _LocalAPIHandler.seen, _LocalAPIHandler.status = [], 200
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _LocalAPIHandler.build())
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        base = tmp_path / "Tailscale"
+        base.mkdir()
+        (base / "ipnport").symlink_to(str(port))
+        (base / f"sameuserproof-{port}").write_text("the-token\n")
+        monkeypatch.setattr(tailnet_mod, "MACOS_LOCALAPI_DIR", base)
+        assert tailnet_mod.whois_route("tailscale") == "localapi-tcp"
+        assert tailnet_mod.run_whois("/no/such/cli", LAPTOP_IP) == LAPTOP
+        headers = _LocalAPIHandler.seen[0][1]
+        assert headers["Authorization"] == "Basic " + base64.b64encode(b":the-token").decode()
+        assert headers["Sec-Tailscale"] == "localapi"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_cli_fallback_kills_a_wrapper_and_its_child(
+    monkeypatch, tmp_path: Path, no_localapi
+) -> None:
+    import os
+    import subprocess
+    import time
+
+    # A wrapper that does not exec, as some installs ship: the real binary is a
+    # child. A unique sleep length marks it, so the check does not depend on
+    # how far the script got before the timeout (a loaded machine is slow).
+    marker = f"3{os.getpid() % 100000}.{time.monotonic_ns() % 1000}"
+    cli = tmp_path / "ts-cli"
+    cli.write_text(f"#!/bin/sh\nsleep {marker} &\nwait\n")
+    cli.chmod(0o755)
+    monkeypatch.setattr(tailnet_mod, "CLI_TIMEOUT_SECONDS", 1.0)
+    assert tailnet_mod.whois_route(str(cli)) == f"cli:{cli}"
+    with pytest.raises(tailnet_mod.WhoisError, match="took over"):
+        tailnet_mod.run_whois(str(cli), LAPTOP_IP)
+
+    def survivors() -> str:
+        found = subprocess.run(["pgrep", "-f", f"sleep {marker}"], capture_output=True, text=True)
+        return found.stdout.strip()
+
+    deadline = time.monotonic() + 5
+    while survivors() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert survivors() == "", "the wrapped child outlived the timeout"
+
+
+def test_the_cli_fallback_reads_answers_and_misses(monkeypatch, tmp_path: Path, no_localapi):
+    cli = tmp_path / "tailscale"
+    answer = tmp_path / "answer.json"
+    answer.write_bytes(WHOIS_JSON)
+    cli.write_text(
+        f'#!/bin/sh\nif [ "$3" = "{LAPTOP_IP}" ]; then cat {answer}; exit 0; fi\n'
+        'echo "peer not found" >&2\nexit 1\n'
+    )
+    cli.chmod(0o755)
+    assert tailnet_mod.run_whois(str(cli), LAPTOP_IP) == LAPTOP
+    assert tailnet_mod.run_whois(str(cli), _tailnet_ip(9)) is None
+
+
+def _tcp_localapi(monkeypatch, tmp_path: Path, handler, *, owner_ok: bool = True):
+    """A fake macOS LocalAPI on a TCP port; returns the server."""
+    import http.server
+    import threading
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    base = tmp_path / "Tailscale"
+    base.mkdir()
+    (base / "ipnport").symlink_to(str(port))
+    (base / f"sameuserproof-{port}").write_text("the-token\n")
+    monkeypatch.setattr(tailnet_mod, "MACOS_LOCALAPI_DIR", base)
+    if not owner_ok:
+        monkeypatch.setattr(tailnet_mod, "_TRUSTED_OWNER_UIDS", (0,))
+    return server
+
+
+def test_a_404_without_tailscaleds_no_match_is_an_error(monkeypatch, tmp_path, no_localapi):
+    """A stale port now held by another server answers 404 to everything: that
+    must fail loudly, not quietly mean "no such node"."""
+    import http.server
+
+    class Foreign(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            body = b"<html>Not Found</html>"
+            self.send_response(404)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args) -> None:
+            pass
+
+    server = _tcp_localapi(monkeypatch, tmp_path, Foreign)
+    try:
+        with pytest.raises(tailnet_mod.WhoisError, match="HTTP 404") as raised:
+            tailnet_mod.run_whois("/no/such/cli", LAPTOP_IP)
+        assert "the-token" not in str(raised.value)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_slow_localapi_body_is_cut_off_at_the_deadline(monkeypatch, tmp_path, no_localapi):
+    import http.server
+    import time
+
+    class Dripping(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Length", "40")
+            self.end_headers()
+            for _ in range(40):
+                self.wfile.write(b" ")
+                self.wfile.flush()
+                time.sleep(0.1)
+
+        def log_message(self, *_args) -> None:
+            pass
+
+    monkeypatch.setattr(tailnet_mod, "WHOIS_TIMEOUT_SECONDS", 0.5)
+    server = _tcp_localapi(monkeypatch, tmp_path, Dripping)
+    try:
+        started = time.monotonic()
+        with pytest.raises(tailnet_mod.WhoisError, match="took over"):
+            tailnet_mod.run_whois("/no/such/cli", LAPTOP_IP)
+        assert time.monotonic() - started < 2
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_localapi_files_another_user_owns_are_ignored(monkeypatch, tmp_path, no_localapi):
+    _LocalAPIHandler.seen, _LocalAPIHandler.status = [], 200
+    server = _tcp_localapi(monkeypatch, tmp_path, _LocalAPIHandler.build(), owner_ok=False)
+    try:
+        assert tailnet_mod.localapi_endpoint() is None  # not root's: never sent the token
+        assert tailnet_mod.whois_route("ts") == "cli:ts"
+        assert _LocalAPIHandler.seen == []
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_localapi_false_always_uses_the_cli(monkeypatch, tmp_path, no_localapi) -> None:
+    _LocalAPIHandler.seen, _LocalAPIHandler.status = [], 200
+    server = _tcp_localapi(monkeypatch, tmp_path, _LocalAPIHandler.build())
+    try:
+        cli = tmp_path / "ts-cli"  # "tailscale" would be the "Tailscale" folder on macOS
+        cli.write_text('#!/bin/sh\necho "peer not found" >&2\nexit 1\n')
+        cli.chmod(0o755)
+        assert tailnet_mod.run_whois(str(cli), LAPTOP_IP, localapi=False) is None
+        assert _LocalAPIHandler.seen == []
+        assert check_tailnet({**GOOD, "localapi": False}).localapi is False
+    finally:
+        server.shutdown()
+        server.server_close()
