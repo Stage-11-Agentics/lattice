@@ -9,7 +9,8 @@ headers (SPEC §10).
   write checks ``Origin`` before the session, and no such GET writes.
 - ``POST /logout`` is a JSON post (``{}``) from ``/web/logout.js``; the
   ``Origin`` is checked before the session is looked up or the body read.
-- ``GET /`` lists the projects the session's token may see.
+- ``GET /`` is the projects overview (:mod:`lattice.server.overview`): the
+  projects the session's token may see, one row each.
 - Every response outside ``/v1`` carries ``nosniff`` and the CSP below, whose
   script hashes are computed from the dashboard page's inline ``<script>``
   blocks when the app is built.
@@ -36,6 +37,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from lattice.core.errors import OpError
 from lattice.dashboard.server import STATIC_DIR
+from lattice.server import overview
 from lattice.server.project import LOADED
 from lattice.server.registry import in_worker
 from lattice.server.sessions import COOKIE_NAME, SESSION_SECONDS, Session, unauthenticated
@@ -114,6 +116,8 @@ class WebAssets:
         self.csp = build_csp(self.page)
         match = _STYLE_RE.search(self.page)
         self.stylesheet = match.group(1) if match else ""
+        icon = static_dir / "favicon.svg"
+        self.favicon: bytes | None = icon.read_bytes() if icon.is_file() else None
 
 
 def is_hosted_api(path: str) -> bool:
@@ -372,29 +376,43 @@ async def logout(request: Request, state: ServerState) -> Response:
 
 
 async def index(request: Request, state: ServerState) -> Response:
-    """``GET /``: the session token's projects, each linking to its dashboard."""
+    """``GET /``: the projects overview (:mod:`lattice.server.overview`), one row
+    per project the session's token may see, each linking to its dashboard."""
     try:
         session, token = session_auth(request, state)
     except OpError:
         return RedirectResponse("/login", status_code=303)
+    sort = overview.normalize_sort(request.query_params.get("sort"))
 
-    def project_code(project: Any) -> str | None:
-        """Under the project's work lock, as every board read (SPEC §8.5)."""
-        import json
-
-        if project.state == LOADED:
+    def summarize(project: Any) -> tuple[str | None, overview.BoardSummary | None]:
+        """Under the project's work lock, as every board read (SPEC §8.5): the
+        project code, and the board's summary at its head (memoized with the
+        dashboard's reads), or ``None`` when the board is unavailable."""
+        loaded = project.state == LOADED
+        if loaded:
             try:
                 project.admit()  # hand edits journaled first, as /v1/projects does
-            except OpError:
-                pass
+            except OpError as exc:
+                state.log.warning(
+                    "overview_board_skipped", project=project.slug, error_code=exc.code
+                )
+                loaded = False
+        code = overview.project_code(project.board)
+        journal = project.journal
+        if not loaded or journal is None:
+            return code, None
+        memo = state.dashboard_memos.for_project(project.slug)
+        head = (journal.epoch, journal.head_seq)
         try:
-            config = json.loads((project.board / "config.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        code = config.get("project_code")
-        return code if isinstance(code, str) else None
+            summary = memo.get(
+                journal, head, overview.MEMO_KEY, lambda: overview.summarize_board(project.board)
+            )
+        except Exception as exc:  # noqa: BLE001 - one unreadable board never hides the rest
+            state.log.error("overview_board_failed", project=project.slug, error=repr(exc))
+            return code, None
+        return code, summary
 
-    listed: list[tuple[str, str | None]] = []
+    rows: list[overview.Row] = []
     slugs = await in_worker(state.registry.slugs)
     for slug in slugs:
         if not token.permits_project(slug):
@@ -403,42 +421,40 @@ async def index(request: Request, state: ServerState) -> Response:
         if project is None:
             continue
         try:
-            code = await state.registry.run_locked(
-                project, lambda p=project: project_code(p), admit=False
+            code, summary = await state.registry.run_locked(
+                project, lambda p=project: summarize(p), admit=False
             )
-        except OpError:
-            code = None
-        listed.append((slug, code))
+        except OpError as exc:  # its lock timed out, or it failed to load
+            state.log.warning("overview_board_skipped", project=slug, error_code=exc.code)
+            busy = "busy" if exc.code == "BOARD_BUSY" else "unavailable"
+            rows.append(overview.Row(slug=slug, code=None, summary=None, state=busy))
+            continue
+        rows.append(overview.Row(slug=slug, code=code, summary=summary))
 
-    items = []
-    for slug, code in listed:
-        label = html.escape(slug) + (
-            f' <span class="web-muted">{html.escape(code)}</span>' if code else ""
-        )
-        items.append(f'<li><a href="/p/{html.escape(slug)}/">{label}</a></li>')
-    listing = "\n".join(items) if items else '<li class="web-muted">No projects.</li>'
-    if session.tailnet_node is None:
-        via = ""
-        logout = '<button type="button" id="logout">Log out</button>\n<script src="/web/logout.js"></script>'
-    else:
-        via = f" through Tailscale ({html.escape(session.tailnet_node)})"
-        logout = ""
-    body = (
-        "<h1>Lattice projects</h1>\n"
-        f'<p class="web-muted">Signed in as {html.escape(token.user)} '
-        f"({html.escape(token.machine)}){via}</p>\n"
-        f"<ul>\n{listing}\n</ul>\n"
-        f"{logout}"
+    signed_in = f"Signed in as {token.user} ({token.machine})"
+    if session.tailnet_node is not None:
+        signed_in += f" through Tailscale ({session.tailnet_node})"
+    page = overview.render(
+        overview.sort_rows(rows, sort),
+        sort=sort,
+        signed_in=signed_in,
+        logout=session.tailnet_node is None,  # a tailnet visit has no session to end
+        version=state.version,
+        at=overview.now(),
     )
-    return _html(_page("Lattice projects", body))
+    return _html(page)
 
 
 async def web_asset(request: Request, state: ServerState) -> Response:
     name = request.path_params["name"]
     if name == "logout.js":
         return Response(LOGOUT_JS, media_type="application/javascript; charset=utf-8")
+    if name == "overview.js":
+        return Response(overview.OVERVIEW_JS, media_type="application/javascript; charset=utf-8")
     if name == "dashboard.css":
         return Response(state.web.stylesheet, media_type="text/css; charset=utf-8")
+    if name == "favicon.svg" and state.web.favicon is not None:
+        return Response(state.web.favicon, media_type="image/svg+xml")
     raise OpError("NOT_FOUND", f"no asset {name}")
 
 
