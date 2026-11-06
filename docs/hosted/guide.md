@@ -729,7 +729,7 @@ Writes from the hosted page are ordinary operations with the session's token, as
    }
    ```
 
-3. Restart the server. The server user must be able to run `tailscale whois` (set `tailscale` to the CLI's full path if the service's `PATH` lacks it). Open `http://board.tailnet.example:8740/`: the index says "Signed in as ... through Tailscale (laptop.tailnet.example)".
+3. Restart the server. It asks tailscaled directly (its LocalAPI) when it can find it, and its startup log line `tailnet_whois` says how: `localapi-unix` or `localapi-tcp` is what you want. Otherwise it runs the `tailscale` CLI, which can take seconds per call under a service manager; set `tailscale` to the CLI's full path if the service's `PATH` lacks it. On macOS with the standalone app, the server user must be an admin to read the LocalAPI token. Open `http://board.tailnet.example:8740/`: the index says "Signed in as ... through Tailscale (laptop.tailnet.example)".
 
 Grant devices, not logins: a login also covers every server and container registered under it. The device is the principal: every process on a granted device, including containers whose traffic leaves through its tailnet address, opens the dashboard as that token. List the `Host` values browsers send, never one a proxy substitutes: the list is what keeps another site, or a name rebound to the server's address, from borrowing a visitor's identity. Never list a host reached through a public door.
 

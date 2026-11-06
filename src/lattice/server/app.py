@@ -1618,6 +1618,9 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
             **({"fd_limit": state.fd_limit} if state.fd_limit is not None else {}),
         )
         if state.tailnet is not None:
+            from lattice.server.tailnet import whois_route
+
+            state.log.info("tailnet_whois", via=whois_route(config.tailnet.tailscale))
             for grant in config.tailnet.grants:
                 token = state.tokens.live(grant.token)
                 if token is None or token.filing_only:

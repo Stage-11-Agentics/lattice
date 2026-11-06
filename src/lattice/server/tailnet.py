@@ -35,18 +35,32 @@ containers whose traffic leaves through its tailnet address) is identified.
 Answers are cached per address for ``cache_seconds`` (a failed lookup for at
 most :data:`FAILURE_SECONDS`), and concurrent misses for one address share
 one lookup, so a page load's many requests cost one ``whois``.
+
+The lookup asks tailscaled's LocalAPI from inside the server process when it
+can find it (:func:`localapi_endpoint`): its unix socket, or on the macOS
+standalone app the TCP port and same-user token under ``/Library/Tailscale``.
+That takes milliseconds. Otherwise it runs the ``tailscale`` CLI, which under
+a service manager can take seconds per call (seen under launchd on macOS).
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import http.client
 import ipaddress
 import json
+import os
 import re
+import signal
+import socket
+import stat
 import subprocess
 import time
+import urllib.parse
+from pathlib import Path
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -61,6 +75,18 @@ TAILNET_STATE_KEY = "lattice_tailnet_identity"
 TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
 TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 WHOIS_TIMEOUT_SECONDS = 3.0
+#: The CLI fallback's budget: a cold ``tailscale`` start is slower than LocalAPI.
+CLI_TIMEOUT_SECONDS = 8.0
+#: tailscaled's LocalAPI unix sockets: the open-source macOS daemon, then Linux.
+LOCALAPI_SOCKETS = (
+    "/var/run/tailscaled.socket",
+    "/var/run/tailscale/tailscaled.sock",
+    "/run/tailscale/tailscaled.sock",
+)
+#: The macOS standalone app's LocalAPI: ``ipnport`` links to the TCP port, and
+#: ``sameuserproof-<port>`` holds the token (readable by admin users).
+MACOS_LOCALAPI_DIR = Path("/Library/Tailscale")
+_LOCALAPI_BODY_LIMIT = 1 << 20
 #: The longest a failed lookup (tailscaled down, a timeout) is remembered.
 FAILURE_SECONDS = 10.0
 _CACHE_MAX = 1024
@@ -122,25 +148,126 @@ def parse_whois(text: str) -> WhoisAnswer:
     return WhoisAnswer(node=name, stable_id=stable_id, login=login)
 
 
-def run_whois(tailscale: str, address: str) -> WhoisAnswer | None:
-    """Ask tailscaled about *address*: an answer, ``None`` when no node holds
-    it, or :class:`WhoisError` when tailscaled could not be asked."""
+@dataclass(frozen=True)
+class LocalAPI:
+    """Where tailscaled's LocalAPI answers: a unix socket, or a TCP port and token."""
+
+    socket_path: str | None = None
+    port: int | None = None
+    token: str | None = field(default=None, repr=False)
+
+    @property
+    def via(self) -> str:
+        return "localapi-unix" if self.socket_path else "localapi-tcp"
+
+
+def localapi_endpoint() -> LocalAPI | None:
+    """tailscaled's LocalAPI on this host, or ``None`` (use the CLI)."""
+    for path in LOCALAPI_SOCKETS:
+        try:
+            if stat.S_ISSOCK(os.stat(path).st_mode):
+                return LocalAPI(socket_path=path)
+        except OSError:
+            continue
     try:
-        done = subprocess.run(
-            [tailscale, "whois", "--json", address],
-            capture_output=True,
-            text=True,
-            timeout=WHOIS_TIMEOUT_SECONDS,
-            check=False,
+        port = int(os.readlink(MACOS_LOCALAPI_DIR / "ipnport"))
+        token = (MACOS_LOCALAPI_DIR / f"sameuserproof-{port}").read_text().strip()
+    except (OSError, ValueError):
+        return None
+    return LocalAPI(port=port, token=token) if token else None
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, path: str, timeout: float) -> None:
+        super().__init__("local-tailscaled.sock", timeout=timeout)
+        self._path = path
+
+    def connect(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        try:
+            sock.connect(self._path)
+        except OSError:
+            sock.close()
+            raise
+        self.sock = sock
+
+
+def localapi_whois(api: LocalAPI, address: str) -> WhoisAnswer | None:
+    """``GET /localapi/v0/whois``: an answer, ``None`` (404: no node holds the
+    address), or :class:`WhoisError`."""
+    headers = {"Sec-Tailscale": "localapi"}
+    if api.socket_path:
+        conn: http.client.HTTPConnection = _UnixHTTPConnection(
+            api.socket_path, WHOIS_TIMEOUT_SECONDS
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    else:
+        conn = http.client.HTTPConnection("127.0.0.1", api.port, timeout=WHOIS_TIMEOUT_SECONDS)
+        basic = base64.b64encode(f":{api.token}".encode()).decode("ascii")
+        headers["Authorization"] = f"Basic {basic}"
+    try:
+        conn.request(
+            "GET", "/localapi/v0/whois?addr=" + urllib.parse.quote(address), headers=headers
+        )
+        response = conn.getresponse()
+        body = response.read(_LOCALAPI_BODY_LIMIT)
+    except (OSError, http.client.HTTPException) as exc:
+        raise WhoisError(f"LocalAPI ({api.via}): {describe_error(exc)}") from exc
+    finally:
+        conn.close()
+    if response.status == 404:
+        return None
+    if response.status != 200:
+        raise WhoisError(f"LocalAPI ({api.via}) answered HTTP {response.status}")
+    return parse_whois(body.decode("utf-8", errors="replace"))
+
+
+def cli_whois(tailscale: str, address: str) -> WhoisAnswer | None:
+    """``tailscale whois --json``. The CLI runs in its own process group, killed
+    whole on timeout: some installs wrap the binary in a shell script that does
+    not ``exec`` it, and killing only the script would orphan it."""
+    try:
+        proc = subprocess.Popen(
+            [tailscale, "whois", "--json", address],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+    except OSError as exc:
         raise WhoisError(describe_error(exc)) from exc
-    if done.returncode != 0:
-        if "peer not found" in done.stderr.lower() or "no match" in done.stderr.lower():
+    try:
+        stdout, stderr = proc.communicate(timeout=CLI_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        proc.communicate()
+        raise WhoisError(f"tailscale whois took over {CLI_TIMEOUT_SECONDS:g} s") from exc
+    if proc.returncode != 0:
+        if "peer not found" in stderr.lower() or "no match" in stderr.lower():
             return None
-        detail = done.stderr.strip().splitlines()[-1:] or [f"exit {done.returncode}"]
+        detail = stderr.strip().splitlines()[-1:] or [f"exit {proc.returncode}"]
         raise WhoisError(detail[0][:200])
-    return parse_whois(done.stdout)
+    return parse_whois(stdout)
+
+
+def whois_route(tailscale: str) -> str:
+    """How :func:`run_whois` would ask right now (for the startup log)."""
+    api = localapi_endpoint()
+    return api.via if api is not None else f"cli:{tailscale}"
+
+
+def run_whois(tailscale: str, address: str) -> WhoisAnswer | None:
+    """Ask tailscaled about *address*: through its LocalAPI when this host has
+    one (rediscovered every call, so a tailscaled restart is followed), else
+    through the CLI at *tailscale*. An answer, ``None`` when no node holds the
+    address, or :class:`WhoisError` when tailscaled could not be asked."""
+    api = localapi_endpoint()
+    if api is not None:
+        return localapi_whois(api, address)
+    return cli_whois(tailscale, address)
 
 
 class TailnetResolver:
@@ -301,13 +428,18 @@ class TailnetMiddleware:
 
 
 __all__ = [
+    "LocalAPI",
     "TAILNET_STATE_KEY",
     "TailnetIdentity",
     "TailnetMiddleware",
     "TailnetResolver",
     "WhoisAnswer",
     "WhoisError",
+    "cli_whois",
+    "localapi_endpoint",
+    "localapi_whois",
     "parse_whois",
     "run_whois",
+    "whois_route",
     "tailnet_address",
 ]
