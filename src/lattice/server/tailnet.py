@@ -183,7 +183,8 @@ def localapi_endpoint() -> LocalAPI | None:
             return LocalAPI(socket_path=path)
     link = MACOS_LOCALAPI_DIR / "ipnport"
     try:
-        if not _trusted(os.lstat(link)):
+        # A link's own mode bits mean nothing (always rwxrwxrwx on Linux): its owner does.
+        if os.lstat(link).st_uid not in _TRUSTED_OWNER_UIDS:
             return None
         port = int(os.readlink(link))
         if not 0 < port < 65536:
