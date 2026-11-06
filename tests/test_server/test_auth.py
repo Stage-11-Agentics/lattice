@@ -248,7 +248,7 @@ def test_login_with_a_foreign_origin_is_403_and_no_session(
     assert _sessions(root) == []
 
 
-def test_login_sets_a_strict_http_only_cookie(server: ServerHandle, root: Path) -> None:
+def test_login_sets_a_lax_http_only_cookie(server: ServerHandle, root: Path) -> None:
     web = WebClient(server)
     response = web.login(mint(root, projects=["alpha"]))
     assert response.status == 303
@@ -257,7 +257,7 @@ def test_login_sets_a_strict_http_only_cookie(server: ServerHandle, root: Path) 
     parts = [p.strip() for p in cookie.split(";")]
     assert parts[0].startswith("lattice_session=") and len(parts[0]) > 40
     lowered = {p.lower() for p in parts[1:]}
-    assert {"httponly", "samesite=strict", "path=/"} <= lowered
+    assert {"httponly", "samesite=lax", "path=/"} <= lowered
     assert "secure" not in lowered  # plain HTTP, no trusted proxy
     assert len(_sessions(root)) == 1
 

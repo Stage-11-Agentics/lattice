@@ -48,7 +48,7 @@ export LATTICE_TOKEN="$(cat "$HOME/lattice-trial/token")"
 | `GET /p/{slug}/issues/media/{issue_id}/{media_id}` and `GET /p/{slug}/issues/media/{issue_id}/{media_id}/frames/{frame_name}` | session | Same-origin dashboard media reads; use the same range-serving helper as `/v1` |
 | `GET /web/dashboard.css`, `GET /web/logout.js` | none | The login and index pages' stylesheet and logout script |
 
-A dashboard session cookie authenticates only `/`, `/logout`, `/p/<slug>/...`, and the stream. It never authenticates operations, sync, or files.
+A dashboard session cookie authenticates only `/`, `/logout`, `/p/<slug>/...`, and the stream. It never authenticates operations, sync, or files. Where `server.json` sets `tailnet`, a Tailscale identity can stand in for the cookie on exactly those routes (Login and sessions, below).
 
 ### Filing-only tokens
 
@@ -319,11 +319,12 @@ These serve the hosted dashboard (guide section 11, Dashboards). A script can us
 
 **Login and sessions.**
 
-- `GET /login` serves a form. `POST /login` is a form post (`application/x-www-form-urlencoded`, at most 4 KiB) with `token` and optional `next` (a `/p/<slug>/` path). It checks the `Origin` first (403 `FORBIDDEN` from another site), then the token (401 with the form again if it is not valid), then sets the `lattice_session` cookie (`HttpOnly; SameSite=Strict; Path=/`, plus `Secure` over HTTPS) and redirects (303) to `next`, else `/`. The session lasts 30 days; the server stores only its hash, in `web_sessions.json`.
+- `GET /login` serves a form; when the request already authenticates (a live session, or a tailnet identity), it redirects (303) to `next`, else `/`. `POST /login` is a form post (`application/x-www-form-urlencoded`, at most 4 KiB) with `token` and optional `next` (a `/p/<slug>/` path). It checks the `Origin` first (403 `FORBIDDEN` from another site), then the token (401 with the form again if it is not valid), then sets the `lattice_session` cookie (`HttpOnly; SameSite=Lax; Path=/`, plus `Secure` over HTTPS) and redirects (303) to `next`, else `/`. The session lasts 30 days and survives server restarts; the server stores only its hash, in `web_sessions.json`. `SameSite=Lax` keeps the session on a link followed from another site.
 - `POST /logout` with `Content-Type: application/json` and a body of `{}` ends the session and clears the cookie: `{"ok": true, "data": {"logged_out": true}}`.
 - `GET /` lists the projects the session's token may see. Without a session it redirects (303) to `/login`.
 - A session dies with its token. A request carrying a cookie that names no live session gets a clearing `Set-Cookie`.
 - The cookie authenticates only `/`, `/logout`, `/p/<slug>/...`, and the stream. When an `Authorization` header is present it is used alone, never falling back to the cookie.
+- **Tailnet identity.** With `server.json` `tailnet` set (SPEC §10), a request on those routes with no `Authorization` and no live cookie is authenticated as a grant's token when its `Host` is listed in `tailnet.hosts`, it is not a cross-site subresource request (`Sec-Fetch-Site` other than `same-origin` or `none` admits only a top-level navigation: `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`), it carries no `X-Forwarded-For` unless `tailnet.trust_forwarded` is true, its client address is a Tailscale address, and `tailscale whois` names a granted node and login. Nothing is stored and no cookie is set. `GET /` then says "through Tailscale (<node>)" and shows no log out button; `POST /logout` answers as usual and changes nothing. Cookie-less writes still need a matching `Origin`.
 
 **A project's dashboard.**
 

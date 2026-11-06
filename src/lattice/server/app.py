@@ -92,6 +92,7 @@ from lattice.server.syncstate import (
     reset_body,
 )
 from lattice.server.sessions import SessionStore
+from lattice.server.tailnet import TAILNET_STATE_KEY, TailnetMiddleware, TailnetResolver
 from lattice.server.tokens import TOKEN_STATE_KEY, TokenRecord, TokenStore
 from lattice.server.web import (
     CLEAR_COOKIE,
@@ -129,6 +130,12 @@ class ServerState:
         self.tokens = TokenStore(self.root, on_reload=self._tokens_reloaded)
         #: Dashboard sessions, the page and its CSP, and the read memos (SPEC §10).
         self.sessions = SessionStore(self.root, self.tokens, on_error=self._sessions_failed)
+        #: Dashboard sign-in by Tailscale identity (``server.json`` ``tailnet``), if on.
+        self.tailnet = (
+            TailnetResolver(config.tailnet, on_error=self._whois_failed)
+            if config.tailnet is not None
+            else None
+        )
         self.web = WebAssets()
         self.dashboard_memos = ReadMemos()
         self.limits = TokenLimits(config.limits)
@@ -148,6 +155,9 @@ class ServerState:
         #: The descriptor limit ``serve`` set at startup (``before``, ``soft``,
         #: ``hard``), logged on the startup line; ``None`` in an in-process server.
         self.fd_limit: dict[str, int | None] | None = None
+
+    def _whois_failed(self, **fields: Any) -> None:
+        self.log.emit("warning", "tailnet_whois_failed", **fields)
 
     def _sessions_failed(self, **fields: Any) -> None:
         self.log.emit("error", "config_reload", file="web_sessions.json", ok=False, **fields)
@@ -264,6 +274,7 @@ class HeadersMiddleware:
                     replayed=fields.get("replayed"),
                     error_code=fields.get("error_code"),
                     user_agent=_user_agent(scope),
+                    **({"tailnet": fields["tailnet"]} if fields.get("tailnet") else {}),
                 )
 
 
@@ -1498,13 +1509,16 @@ async def stream(request: Request, state: ServerState) -> Response:
     check_protocol(request)
     authorization = request.headers.get("authorization")
     cookie = session_cookie(request) if authorization is None else None
-    if cookie is not None:
-        # A browser's EventSource (SPEC §10): the session authenticates the
-        # stream only when no Authorization header is sent; an Origin, when a
-        # browser sends one, must be this server's.
+    tailnet = request.scope["state"].get(TAILNET_STATE_KEY) if authorization is None else None
+    browser = cookie is not None or tailnet is not None
+    session = None
+    if browser:
+        # A browser's EventSource (SPEC §10): the session (or the tailnet
+        # identity) authenticates the stream only when no Authorization header
+        # is sent; an Origin, when a browser sends one, must be this server's.
         if request.headers.get("origin") is not None:
             require_origin(request, state)
-        _session, token = session_auth(request, state)
+        session, token = session_auth(request, state)
     else:
         token = authenticate(request, state)  # open streams are not in the in-flight limit
     project = resolve_project(state, token, slug)
@@ -1520,10 +1534,14 @@ async def stream(request: Request, state: ServerState) -> Response:
 
     def alive() -> bool:
         try:
-            if cookie is not None:
+            if not browser:
+                current = state.tokens.authenticate(authorization)
+            elif session is None or session.tailnet_node is None:
                 _session, current = state.sessions.authenticate(cookie)
             else:
-                current = state.tokens.authenticate(authorization)
+                current = state.tokens.live(session.token_id)
+                if current is None or current.filing_only:
+                    return False
         except OpError:
             return False
         return current.permits_project(slug) and project.state == LOADED
@@ -1599,6 +1617,13 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
             projects=len(state.registry.slugs()),
             **({"fd_limit": state.fd_limit} if state.fd_limit is not None else {}),
         )
+        if state.tailnet is not None:
+            for grant in config.tailnet.grants:
+                token = state.tokens.live(grant.token)
+                if token is None or token.filing_only:
+                    state.log.warning(
+                        "tailnet_grant_unusable", node=grant.node, token_id=grant.token
+                    )
         state.registry.start()
         try:
             yield
@@ -1700,4 +1725,9 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.lattice = state
-    return HeadersMiddleware(FilingTokenGuard(app, state.tokens), state)
+    return HeadersMiddleware(
+        FilingTokenGuard(
+            TailnetMiddleware(app, state.tailnet, state.sessions, state.log), state.tokens
+        ),
+        state,
+    )

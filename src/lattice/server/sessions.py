@@ -73,6 +73,9 @@ class Session:
     token_id: str
     created_at: str
     expires_at: str
+    #: Set (the node's name) on a visit identified by Tailscale (SPEC §10)
+    #: rather than by a cookie; such a session is never stored.
+    tailnet_node: str | None = None
 
     @classmethod
     def from_json(cls, raw: dict) -> Session:
@@ -156,8 +159,8 @@ class SessionStore:
         session = self._by_hash.get(hash_secret(cookie))
         if session is None or _expired(session.expires_at, _now()):
             raise unauthenticated()
-        token = self.tokens.get(session.token_id)
-        if token is None or token.revoked_at is not None:
+        token = self.tokens.live(session.token_id)
+        if token is None:
             raise unauthenticated()
         return session, token
 

@@ -1,9 +1,12 @@
 """The browser side of the server: login, sessions, the index, and the page
 headers (SPEC §10).
 
-- ``GET /login`` serves a form; ``POST /login`` (a form post) checks the
-  ``Origin`` first, then the submitted token, and sets ``lattice_session``
-  (``HttpOnly; SameSite=Strict; Path=/``, plus ``Secure`` over HTTPS).
+- ``GET /login`` serves a form, or redirects to ``next`` when the request
+  already authenticates; ``POST /login`` (a form post) checks the ``Origin``
+  first, then the submitted token, and sets ``lattice_session`` (``HttpOnly;
+  SameSite=Lax; Path=/``, plus ``Secure`` over HTTPS). ``Lax`` keeps the
+  session on a link followed from another site; every cookie-authenticated
+  write checks ``Origin`` before the session, and no such GET writes.
 - ``POST /logout`` is a JSON post (``{}``) from ``/web/logout.js``; the
   ``Origin`` is checked before the session is looked up or the body read.
 - ``GET /`` lists the projects the session's token may see.
@@ -13,7 +16,9 @@ headers (SPEC §10).
 
 A session cookie authenticates only ``/``, ``/logout``, ``/p/<slug>/...``, and
 the stream. No other ``/v1`` handler reads cookies: they take ``Authorization:
-Bearer`` alone.
+Bearer`` alone. On those same routes, a request with no live cookie and no
+``Authorization`` may instead be identified by Tailscale (``server.json``
+``tailnet``, :mod:`lattice.server.tailnet`), as the grant's token.
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from lattice.server.project import LOADED
 from lattice.server.registry import in_worker
 from lattice.server.sessions import COOKIE_NAME, SESSION_SECONDS, Session, unauthenticated
 from lattice.server.filing_guard import require_filing_route
+from lattice.server.tailnet import TAILNET_STATE_KEY
 from lattice.server.tokens import TOKEN_STATE_KEY, TokenRecord
 
 if TYPE_CHECKING:
@@ -117,8 +123,10 @@ def is_hosted_api(path: str) -> bool:
 
 
 def page_headers(path: str, csp: str) -> list[tuple[bytes, bytes]]:
-    """The headers SPEC §10 adds outside ``/v1``: ``nosniff`` and the CSP, and
-    ``no-store`` on hosted API and bearer-secret reporter routes."""
+    """The headers SPEC §10 adds outside ``/v1``: ``nosniff`` and the CSP,
+    ``no-store`` on hosted API and bearer-secret reporter routes, and
+    ``Cross-Origin-Resource-Policy: same-origin`` on ``/p/`` (no other site may
+    embed a dashboard's responses, whatever authenticated them)."""
     if path == "/v1" or path.startswith("/v1/"):
         return []
     extra = [
@@ -129,6 +137,8 @@ def page_headers(path: str, csp: str) -> list[tuple[bytes, bytes]]:
         extra.append((b"cache-control", b"no-store"))
     if path == "/r" or path.startswith("/r/"):
         extra.append((b"referrer-policy", b"no-referrer"))
+    if path.startswith("/p/"):
+        extra.append((b"cross-origin-resource-policy", b"same-origin"))
     return extra
 
 
@@ -187,11 +197,30 @@ def session_cookie(request: Request) -> str | None:
 CLEAR_COOKIE = "lattice_clear_session"
 
 
+def tailnet_session(request: Request, state: ServerState) -> tuple[Session, TokenRecord] | None:
+    """The request's Tailscale identity as an unstored session, or ``None``.
+    The grant's token must pass the bearer rule (``TokenStore.live``) and not
+    be filing-only."""
+    if request.headers.get("authorization") is not None:
+        return None
+    identity = request.scope.get("state", {}).get(TAILNET_STATE_KEY)
+    if identity is None:
+        return None
+    token = state.tokens.live(identity.grant.token)
+    if token is None or token.filing_only:
+        return None
+    session = Session(
+        sha256="", token_id=token.id, created_at="", expires_at="", tailnet_node=identity.node
+    )
+    return session, token
+
+
 def session_auth(request: Request, state: ServerState) -> tuple[Session, TokenRecord]:
-    """The request's session and its live token, or ``UNAUTHENTICATED``. A cookie
-    that names no live session (expired, revoked, deleted, malformed) is
-    cleared on the response, unless the request sent ``Authorization`` (which
-    alone decides, so the cookie was never the credential in question)."""
+    """The request's session and its live token, or ``UNAUTHENTICATED``. A live
+    cookie comes first, then the request's Tailscale identity. A cookie that
+    names no live session (expired, revoked, deleted, malformed) is cleared on
+    the response, unless the request sent ``Authorization`` (which alone
+    decides, so the cookie was never the credential in question)."""
     cookie = session_cookie(request)
     try:
         session, token = state.sessions.authenticate(cookie)
@@ -199,7 +228,11 @@ def session_auth(request: Request, state: ServerState) -> tuple[Session, TokenRe
         if cookie is not None and request.headers.get("authorization") is None:
             secure = request_scheme(request, state) == "https"
             request.scope["state"][CLEAR_COOKIE] = _cookie_header("", secure=secure, max_age=0)
-        raise
+        via_tailnet = tailnet_session(request, state)
+        if via_tailnet is None:
+            raise
+        session, token = via_tailnet
+        request.scope["state"]["log"]["tailnet"] = session.tailnet_node
     cached = request.scope.setdefault("state", {}).get(TOKEN_STATE_KEY)
     if cached is not None and cached.id == token.id:
         token = cached
@@ -216,7 +249,7 @@ def session_auth(request: Request, state: ServerState) -> tuple[Session, TokenRe
 
 
 def _cookie_header(value: str, *, secure: bool, max_age: int) -> str:
-    parts = [f"{COOKIE_NAME}={value}", "HttpOnly", "SameSite=Strict", "Path=/"]
+    parts = [f"{COOKIE_NAME}={value}", "HttpOnly", "SameSite=Lax", "Path=/"]
     parts.append(f"Max-Age={max_age}")
     if secure:
         parts.append("Secure")
@@ -283,7 +316,14 @@ def login_form(next_path: str = "/", message: str | None = None) -> str:
 
 
 async def login_page(request: Request, state: ServerState) -> Response:
-    return _html(login_form(request.query_params.get("next")))
+    """The form, unless the request already authenticates (a live cookie or a
+    tailnet identity): then straight on to ``next``."""
+    next_path = request.query_params.get("next")
+    try:
+        session_auth(request, state)
+    except OpError:
+        return _html(login_form(next_path))
+    return RedirectResponse(_safe_next(next_path), status_code=303)
 
 
 async def login(request: Request, state: ServerState) -> Response:
@@ -323,8 +363,9 @@ async def logout(request: Request, state: ServerState) -> Response:
     require_origin(request, state)
     require_json(request)
     session, token = session_auth(request, state)
-    await in_worker(lambda: state.sessions.delete(session))
-    state.log.info("logout", token_id=token.id)
+    if session.tailnet_node is None:  # a tailnet visit has no stored session to end
+        await in_worker(lambda: state.sessions.delete(session))
+        state.log.info("logout", token_id=token.id)
     response = JSONResponse({"ok": True, "data": {"logged_out": True}})
     clear_session_cookie(response, secure=request_scheme(request, state) == "https")
     return response
@@ -333,7 +374,7 @@ async def logout(request: Request, state: ServerState) -> Response:
 async def index(request: Request, state: ServerState) -> Response:
     """``GET /``: the session token's projects, each linking to its dashboard."""
     try:
-        _session, token = session_auth(request, state)
+        session, token = session_auth(request, state)
     except OpError:
         return RedirectResponse("/login", status_code=303)
 
@@ -376,13 +417,18 @@ async def index(request: Request, state: ServerState) -> Response:
         )
         items.append(f'<li><a href="/p/{html.escape(slug)}/">{label}</a></li>')
     listing = "\n".join(items) if items else '<li class="web-muted">No projects.</li>'
+    if session.tailnet_node is None:
+        via = ""
+        logout = '<button type="button" id="logout">Log out</button>\n<script src="/web/logout.js"></script>'
+    else:
+        via = f" through Tailscale ({html.escape(session.tailnet_node)})"
+        logout = ""
     body = (
         "<h1>Lattice projects</h1>\n"
         f'<p class="web-muted">Signed in as {html.escape(token.user)} '
-        f"({html.escape(token.machine)})</p>\n"
+        f"({html.escape(token.machine)}){via}</p>\n"
         f"<ul>\n{listing}\n</ul>\n"
-        '<button type="button" id="logout">Log out</button>\n'
-        '<script src="/web/logout.js"></script>'
+        f"{logout}"
     )
     return _html(_page("Lattice projects", body))
 
@@ -410,6 +456,7 @@ __all__ = [
     "page_headers",
     "require_origin",
     "session_auth",
+    "tailnet_session",
     "unauthenticated",
     "web_asset",
 ]

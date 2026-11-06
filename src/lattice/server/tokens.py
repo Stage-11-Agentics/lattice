@@ -318,20 +318,33 @@ class TokenStore:
         digest = stored_hash.removeprefix(FILING_HASH_PREFIX) if prefixed else stored_hash
         expected = digest if _HASH_RE.fullmatch(digest) else "0" * 64
         matches = hmac.compare_digest(hash_secret(secret), expected)
-        if (
-            record is None
-            or not matches
-            or record.revoked_at is not None
-            or not record.valid_restriction
-            or (prefixed and not record.filing_only)
-            or (record.only and not prefixed)
-        ):
+        if record is None or not matches or not record_usable(record):
             raise failure
         return record
 
     def get(self, token_id: str) -> TokenRecord | None:
         self.refresh()
         return self._by_id.get(token_id)
+
+    def live(self, token_id: str) -> TokenRecord | None:
+        """The record of *token_id* when it may authenticate at all (the bearer
+        rule, :func:`record_usable`), else ``None``. Sessions and tailnet
+        visits, which hold a token id rather than its secret, use this."""
+        record = self.get(token_id)
+        return record if record is not None and record_usable(record) else None
+
+
+def record_usable(record: TokenRecord) -> bool:
+    """Whether a token record may authenticate: not revoked, a restriction this
+    reader understands, and a hash prefix that agrees with the restriction
+    (``only-v1:`` exactly when the token is filing-only)."""
+    prefixed = record.sha256.startswith(FILING_HASH_PREFIX)
+    return (
+        record.revoked_at is None
+        and record.valid_restriction
+        and not (prefixed and not record.filing_only)
+        and not (record.only and not prefixed)
+    )
 
 
 # ---------------------------------------------------------------------------
