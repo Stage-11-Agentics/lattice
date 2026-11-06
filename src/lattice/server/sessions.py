@@ -73,6 +73,9 @@ class Session:
     token_id: str
     created_at: str
     expires_at: str
+    #: Set (the node's name) on a visit identified by Tailscale (SPEC §10)
+    #: rather than by a cookie; such a session is never stored.
+    tailnet_node: str | None = None
 
     @classmethod
     def from_json(cls, raw: dict) -> Session:

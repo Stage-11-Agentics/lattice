@@ -552,7 +552,9 @@ def test_filing_routes_fail_closed_for_every_registered_non_filing_method(
 ) -> None:
     filing = filing_token(root)
     record = tokens._read(root)[0]
-    starlette = server.app.app.app
+    starlette = server.app
+    while not hasattr(starlette, "router"):  # through the middleware chain
+        starlette = starlette.app
     routes = starlette.router.routes
     expected_patterns = {
         "/healthz",

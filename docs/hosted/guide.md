@@ -291,6 +291,7 @@ The server root is `--root`, else `$LATTICE_SERVER_ROOT`, else `$XDG_DATA_HOME/l
 - `bind` and `port`: where the server listens. Keep `127.0.0.1` and put a reverse proxy in front (section 10), or bind a private-network address.
 - `trusted_proxies`: the addresses or CIDR ranges of your reverse proxies, for example `["127.0.0.1"]` for a proxy on the same host. The server honors `X-Forwarded-Proto` and `X-Forwarded-For` only on connections from those addresses and ignores them from every other peer. Leave it empty (the default) with no proxy. Section 10 says what to list.
 - `public_origins`: the browser origins of the dashboard when a proxy rewrites `Host`, for example `["https://lattice.example.internal"]`.
+- `tailnet`: dashboard sign-in by Tailscale identity, off unless set. Section 11, Dashboards, shows how.
 - `limits`: what one token can take from the others. All projects share one process, one disk, and one memory. `lock_timeout_seconds` may not exceed 60. Below `min_free_disk_bytes` of free disk, writes fail with `STORAGE_LOW` and reads keep working. The three `max_issue_media_*` keys cap issue media: 100 MiB per stored file, 250 MiB per issue (frames included) and 10 GiB per project; an upload over a cap is refused with `PAYLOAD_TOO_LARGE` or `MEDIA_QUOTA_EXCEEDED` (HTTP 413).
 
 Edit `server.json` with the server stopped; the server reads it at start.
@@ -709,9 +710,28 @@ lattice sync --follow
 1. Open `<server url>/login` and paste a token. The token is checked, and the browser gets a session cookie; the token itself is not stored in the browser.
 2. `<server url>/` lists the projects the token may reach. Each project's dashboard is at `/p/<slug>/`. Opening one without a session sends you to the login first.
 3. The page follows the project's change stream and refetches on every write, so it is live. If the stream drops (a proxy that buffers it, say), it falls back to refreshing every 5 seconds.
-4. **Log out** ends the session. A session lasts 30 days and dies with its token: revoking the token (section 8) logs out every browser that used it.
+4. **Log out** ends the session. A session lasts 30 days, survives server restarts, and dies with its token: revoking the token (section 8) logs out every browser that used it. A link to a board followed from another page keeps the session.
 
 Writes from the hosted page are ordinary operations with the session's token, as the browser actor. The page gives each write one operation ID and reuses it on retry, so a double click or a retry after a lost answer applies once. Two things the hosted page cannot do: open a plan or notes file in your editor (use `lattice plan write` / `lattice notes write` from a checkout), and show git branches (the server has no worktree).
+
+**Signing in from the tailnet.** On a Tailscale network, the server can recognize your own devices, so their browsers open every board with no token and no cookie: through restarts, after the browser closes, in any browser on the device, and on every host name you list. Each device is granted a token you already have; that token decides which projects it sees, and revoking it ends the device's access at once.
+
+1. Find each device's MagicDNS name and login with `tailscale whois <its tailnet address>` (or `tailscale status`), and pick its token id from `lattice server token list`. Prefer one token per device, minted with that device's `--machine`.
+2. Add the section to `server.json`, listing every `Host` your browsers use for the server: the MagicDNS name, the short name, the tailnet address, each with the port, and a proxy's name if one fronts the server on the tailnet:
+
+   ```json
+   "tailnet": {
+     "hosts": ["board:8740", "board.tailnet.example:8740", "100.x.y.z:8740"],
+     "nodes": [
+       {"node": "laptop.tailnet.example", "login": "alice@example.com", "token": "tok_..."},
+       {"node": "phone.tailnet.example", "login": "alice@example.com", "token": "tok_..."}
+     ]
+   }
+   ```
+
+3. Restart the server. The server user must be able to run `tailscale whois` (set `tailscale` to the CLI's full path if the service's `PATH` lacks it). Open `http://board.tailnet.example:8740/`: the index says "Signed in as ... through Tailscale (laptop.tailnet.example)".
+
+Grant devices, not logins: a login also covers every server and container registered under it. List only hosts that reach the server directly over the tailnet, or through a proxy in `trusted_proxies` that sets `X-Forwarded-For` to the real client. Never list a host reached through a public door: the `Host` list is what keeps another site, or a name rebound to the server's address, from borrowing a visitor's identity. Without the section, or from any other device, the token login works as before.
 
 Behind a proxy that rewrites `Host`, list the public origin in `public_origins` (section 6); without it, logins and writes are refused by the `Origin` check. Under the hosted page's content policy, a dashboard background image from another site does not load. Moving a task in either dashboard starts no automatic review (section 13).
 

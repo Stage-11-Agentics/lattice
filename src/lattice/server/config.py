@@ -79,6 +79,31 @@ class StreamConfig:
 
 
 @dataclass(frozen=True)
+class TailnetGrant:
+    """One Tailscale node whose browser signs in as *token* (SPEC §10)."""
+
+    #: The node's MagicDNS name (no trailing dot) or its StableID.
+    node: str
+    #: The node owner's Tailscale login name; it must match too.
+    login: str
+    #: The id (``tok_…``) of the token the visit authenticates as.
+    token: str
+
+
+@dataclass(frozen=True)
+class TailnetConfig:
+    """``server.json`` ``tailnet``: dashboard sign-in by Tailscale identity."""
+
+    #: ``Host`` header values (``name`` or ``name:port``) the identity applies on.
+    hosts: tuple[str, ...]
+    grants: tuple[TailnetGrant, ...]
+    #: The ``tailscale`` CLI that answers ``whois``.
+    tailscale: str = "tailscale"
+    #: How long one address's answer is kept, in seconds.
+    cache_seconds: float = 60.0
+
+
+@dataclass(frozen=True)
 class ServerConfig:
     bind: str = "127.0.0.1"
     port: int = 8740
@@ -89,6 +114,7 @@ class ServerConfig:
     audit: AuditConfig = field(default_factory=AuditConfig)
     limits: Limits = field(default_factory=Limits)
     stream: StreamConfig = field(default_factory=StreamConfig)
+    tailnet: TailnetConfig | None = None
 
     def with_limits(self, **changes: Any) -> ServerConfig:
         """A copy with some limits changed (tests and callers that tune one knob)."""
@@ -171,6 +197,71 @@ def check_trusted_proxies(value: Any) -> tuple[str, ...]:
             ) from exc
         entries.append(entry)
     return tuple(entries)
+
+
+_TOKEN_ID_RE = re.compile(r"^tok_[0-9A-Za-z]{1,64}$")
+_TAILNET_KEYS = {"hosts", "nodes", "tailscale", "cache_seconds"}
+_GRANT_KEYS = {"node", "login", "token"}
+
+
+def _nonempty_str(where: str, value: Any) -> str:
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise ServerConfigError(f"{where} must be a non-empty string without surrounding spaces")
+    return value
+
+
+def check_tailnet(raw: Any) -> TailnetConfig | None:
+    """``tailnet`` (SPEC §10): ``null``, or the hosts and grants for dashboard
+    sign-in by Tailscale identity. Both lists must be non-empty: an empty host
+    list would turn the feature on nowhere, and an empty grant list would
+    authenticate nobody, so either is a mistake worth refusing."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ServerConfigError("tailnet must be null or an object")
+    for key in raw:
+        if key not in _TAILNET_KEYS:
+            raise ServerConfigError(f"unknown key tailnet.{key} in {SERVER_JSON}")
+    hosts = raw.get("hosts")
+    if not isinstance(hosts, list) or not hosts:
+        raise ServerConfigError(
+            'tailnet.hosts must list the Host header values it applies on, e.g. ["board:8740"]'
+        )
+    host_values = tuple(_nonempty_str("tailnet.hosts entries", h).lower() for h in hosts)
+    nodes = raw.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        raise ServerConfigError(
+            'tailnet.nodes must list grants {"node": ..., "login": ..., "token": "tok_..."}'
+        )
+    grants = []
+    for entry in nodes:
+        if not isinstance(entry, dict) or set(entry) != _GRANT_KEYS:
+            raise ServerConfigError(
+                'each tailnet.nodes entry must be {"node": ..., "login": ..., "token": "tok_..."}'
+            )
+        node = _nonempty_str("tailnet.nodes[].node", entry["node"]).rstrip(".")
+        login = _nonempty_str("tailnet.nodes[].login", entry["login"])
+        token = _nonempty_str("tailnet.nodes[].token", entry["token"])
+        if not _TOKEN_ID_RE.fullmatch(token):
+            raise ServerConfigError(
+                f"tailnet.nodes[].token must be a token id (tok_...), got {token!r}; "
+                "lattice server token list shows them"
+            )
+        grants.append(TailnetGrant(node=node, login=login, token=token))
+    kwargs: dict[str, Any] = {}
+    if "tailscale" in raw:
+        kwargs["tailscale"] = _nonempty_str("tailnet.tailscale", raw["tailscale"])
+    if "cache_seconds" in raw:
+        value = raw["cache_seconds"]
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise ServerConfigError(f"tailnet.cache_seconds must be a number >= 0, got {value!r}")
+        kwargs["cache_seconds"] = float(value)
+    return TailnetConfig(hosts=host_values, grants=tuple(grants), **kwargs)
 
 
 def _check_int(section: str, key: str, value: Any, *, minimum: int = 0) -> int:
@@ -270,6 +361,8 @@ def parse_config(raw: Any) -> ServerConfig:
     if stream.heartbeat_seconds < 1:
         raise ServerConfigError("stream.heartbeat_seconds must be at least 1")
     kwargs["stream"] = stream
+    if "tailnet" in raw:
+        kwargs["tailnet"] = check_tailnet(raw["tailnet"])
     return ServerConfig(**kwargs)
 
 
