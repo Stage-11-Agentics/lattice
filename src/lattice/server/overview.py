@@ -33,7 +33,8 @@ HOUR = 3600.0
 MARK_DAYS = 14
 #: Rolling one-hour windows in the server chart.
 CHART_HOURS = 24
-SORTS = ("edited", "name")
+SORTS = ("edited", "name", "tickets")
+SORT_LABELS = (("edited", "Last edit"), ("name", "Name"), ("tickets", "Tickets"))
 MEMO_KEY = ("overview", "")
 
 
@@ -166,6 +167,12 @@ class Row:
 def sort_rows(rows: Sequence[Row], sort: str) -> list[Row]:
     if sort == "name":
         return sorted(rows, key=lambda r: r.slug)
+    if sort == "tickets":
+        # Most tickets first, unavailable boards last; ties by slug.
+        return sorted(
+            rows,
+            key=lambda r: (1, 0, r.slug) if r.summary is None else (0, -r.summary.tickets, r.slug),
+        )
 
     def edited(row: Row) -> tuple[int, float, str]:
         """Newest edit first, then boards with no edit, then unavailable boards;
@@ -278,9 +285,11 @@ def render(
     logout: bool,
     version: str,
     at: float,
+    server_name: str | None = None,
 ) -> str:
     """The whole page. *rows* are already filtered to the token's projects and
-    sorted; *signed_in* is the plain "Signed in as ..." sentence."""
+    sorted; *signed_in* is the plain "Signed in as ..." sentence; *server_name*
+    (``server.json`` ``name``) completes "Projects on <name>"."""
     summaries = [r.summary for r in rows if r.summary is not None]
     tickets = sum(s.tickets for s in summaries)
     day = sum(updated_since(s.updated, at - DAY) for s in summaries)
@@ -301,7 +310,7 @@ def render(
         "<span>Now</span></div></div></div>"
     )
     links = []
-    for key, label in (("edited", "Last edit"), ("name", "Name")):
+    for key, label in SORT_LABELS:
         if key == sort:
             links.append(f'<a href="/?sort={key}" aria-current="true"><span>{label}</span></a>')
         else:
@@ -322,6 +331,7 @@ def render(
         else ""
     )
     stamp = _iso(at)
+    subtitle = f"Projects on {server_name}" if server_name else "Projects"
     return (
         '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n'
@@ -329,19 +339,18 @@ def render(
         '<link rel="icon" type="image/svg+xml" href="/web/favicon.svg">\n'
         f"<style>\n{OVERVIEW_CSS}</style>\n</head>\n<body>\n"
         '<main class="sheet">\n'
-        '<header class="head"><div>'
-        '<div class="pl">Lattice <b>/</b> Projects</div>'
-        "<h1>Projects</h1>"
-        f'<p class="lede">{html.escape(signed_in)}</p>'
-        f"</div>{title_block}</header>\n"
+        '<header class="head"><h1 class="brand">Lattice</h1>'
+        f'<p class="sub">{html.escape(subtitle)}</p></header>\n'
+        f"{title_block}\n"
         '<div class="zone"><span class="sq">A</span><span class="pl"><b>Boards</b></span>'
         '<span class="line"></span>'
         f'<nav class="seg" aria-label="Sort"><span class="pl">Sort</span>'
         f'<span class="cells">{"".join(links)}</span></nav></div>\n'
         f'<div class="tbl" data-sort="{sort}">{header}{body_rows}</div>\n'
-        '<footer class="bottom">'
+        '<footer class="bottom"><div class="who">'
+        f'<p class="lede">{html.escape(signed_in)}</p>'
         f'<span class="pl">As of <time datetime="{stamp}" data-local>{stamp}</time>'
-        f" · Lattice {html.escape(version)}</span>{logout_html}</footer>\n"
+        f" · Lattice {html.escape(version)}</span></div>{logout_html}</footer>\n"
         "</main>\n"
         '<script src="/web/overview.js"></script>\n'
         "</body>\n</html>\n"
@@ -394,18 +403,19 @@ transition:opacity 60ms linear;color:var(--bracket)}
 .bk:focus-visible{outline:none}
 .bk:active>:not(.tk){opacity:.55}
 @media (prefers-reduced-motion:reduce){.tk{transition:none}}
-.head{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:32px;align-items:end;padding-bottom:20px;
-border-bottom:1px solid var(--rule)}
-h1{font:600 28px/32px var(--sans);margin:6px 0 8px;letter-spacing:-.01em}
-.lede{color:var(--text-2);margin:0;max-width:520px;overflow-wrap:anywhere}
-.tb{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--rule)}
-.tb>div{padding:6px 8px 7px;border-right:1px solid var(--rule);min-width:0}
-.tb>div:nth-child(3){border-right:0}
-.tb .v{font:600 18px/22px var(--mono);margin-top:2px;white-space:nowrap}
+.head{text-align:center;padding:4px 0 24px}
+.brand{font:600 64px/68px var(--sans);letter-spacing:-.03em;margin:0}
+.sub{font:500 12px/16px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--text-2);
+margin:10px 0 0;overflow-wrap:anywhere}
+.lede{color:var(--text-2);margin:0 0 4px;overflow-wrap:anywhere}
+.tb{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,2fr);border:1px solid var(--rule)}
+.tb>div{padding:8px 10px 9px;border-right:1px solid var(--rule);min-width:0}
+.tb>div:last-child{border-right:0}
+.tb .v{font:600 22px/26px var(--mono);margin-top:4px;white-space:nowrap}
 .tb .v.hot{color:var(--accent)}
-.tb .chart{grid-column:1/-1;border-top:1px solid var(--rule);border-right:0;padding:8px 8px 6px}
+.tb .chart{padding:8px 10px 6px}
 .axis{display:flex;justify-content:space-between;margin-top:4px}
-.zone{display:flex;align-items:center;gap:10px;margin:22px 0 10px}
+.zone{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:24px 0 10px}
 .zone .sq{width:16px;height:16px;border:1px solid var(--rule);display:grid;place-items:center;font:600 10px/1 var(--mono)}
 .zone .line{flex:1;height:1px;background:var(--rule)}
 .seg{display:flex;align-items:center;gap:8px}
@@ -441,16 +451,20 @@ grid-template-areas:"ix name code tot day mark ago"}
 .empty{margin:0;padding:14px 0;color:var(--text-2);border-bottom:1px solid var(--rule-soft)}
 .bottom{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:22px;padding-top:12px;
 border-top:1px solid var(--rule)}
+.who{min-width:0}
 .btn{font:500 10px/24px var(--mono);letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--rule);
 padding:0 12px;background:none;color:var(--text);cursor:pointer}
 @media (max-width:720px){
-body{padding:0 0 calc(76px + env(safe-area-inset-bottom))}
-.sheet{border:0;padding:20px 16px 24px}
-.head{grid-template-columns:1fr;gap:16px;padding-bottom:16px}
-h1{font-size:24px;line-height:28px}
-.zone{margin:16px 0 4px}
-.seg{position:fixed;left:0;right:0;bottom:0;z-index:5;gap:12px;background:var(--surface);border-top:1px solid var(--rule);
-padding:8px 16px calc(8px + env(safe-area-inset-bottom))}
+body{padding:0 0 env(safe-area-inset-bottom)}
+.sheet{border:0;padding:24px 16px 24px}
+.head{padding-bottom:20px}
+.brand{font-size:48px;line-height:52px}
+.tb{grid-template-columns:repeat(3,minmax(0,1fr))}
+.tb>div:nth-child(3){border-right:0}
+.tb .v{font-size:18px;line-height:22px}
+.tb .chart{grid-column:1/-1;border-top:1px solid var(--rule)}
+.zone{margin:20px 0 4px}
+.seg{flex-basis:100%;gap:12px}
 .seg .cells{flex:1}
 .seg a{flex:1 1 0;width:auto;font-size:11px;line-height:44px}
 .tbl{margin:0}

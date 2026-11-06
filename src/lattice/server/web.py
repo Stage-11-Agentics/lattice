@@ -441,6 +441,7 @@ async def index(request: Request, state: ServerState) -> Response:
         logout=session.tailnet_node is None,  # a tailnet visit has no session to end
         version=state.version,
         at=overview.now(),
+        server_name=state.config.name,
     )
     return _html(page)
 

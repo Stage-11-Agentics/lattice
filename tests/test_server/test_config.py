@@ -34,6 +34,11 @@ def test_defaults_match_the_spec_and_init_writes_them() -> None:
         {"audit": {"push": {"remote": "origin"}}},
         {"stream": {"heartbeat_seconds": 0}},
         {"port": 70000},
+        {"name": 7},
+        {"name": ""},
+        {"name": "x" * 65},
+        {"name": "line\nbreak"},
+        {"name": " padded "},
         [],
     ],
 )
@@ -53,6 +58,12 @@ def test_valid_overrides() -> None:
     assert config.limits.lock_timeout_seconds == 60
     assert config.limits.max_body_bytes == 10
     assert config.limits.max_inflight_per_token == 8
+    assert config.name is None
+
+
+def test_the_server_name_is_optional() -> None:
+    assert parse_config({"name": "Studio"}).name == "Studio"
+    assert parse_config({"name": None}).name is None
 
 
 def test_root_resolution(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
