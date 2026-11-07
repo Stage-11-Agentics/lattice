@@ -435,7 +435,13 @@ async def warm_overview(state: ServerState) -> None:
         slugs = await in_worker(state.registry.slugs)
         warmed = 0
         for slug in slugs:
-            row = await board_row(state, slug)
+            try:
+                row = await board_row(state, slug)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one board never leaves the rest cold
+                state.log.error("overview_board_failed", project=slug, error=repr(exc))
+                continue
             if row is not None and row.summary is not None:
                 warmed += 1
         state.log.info(

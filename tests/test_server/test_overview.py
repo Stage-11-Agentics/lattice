@@ -295,14 +295,33 @@ def test_startup_warms_every_board_before_the_first_visit(root, monkeypatch) -> 
         assert sorted(calls) == ["alpha", "beta"]  # the first visit computed nothing
 
 
+def test_one_bad_board_never_leaves_the_others_cold(root, monkeypatch) -> None:
+    from lattice.server import web as web_module
+    from lattice.server.testing import running_server
+
+    original = web_module.board_row
+
+    async def flaky(state, slug):
+        if slug == "alpha":
+            raise RuntimeError("alpha broke")
+        return await original(state, slug)
+
+    monkeypatch.setattr(web_module, "board_row", flaky)
+    with running_server(root) as fresh:
+        failed = [line for line in fresh.log_lines if line.get("event") == "overview_board_failed"]
+        assert failed and failed[0]["project"] == "alpha"
+        warmed = [line for line in fresh.log_lines if line.get("event") == "overview_warmed"]
+        assert warmed and warmed[0]["boards"] == 1 and warmed[0]["projects"] == 2
+
+
 def test_a_failing_warm_is_logged_and_the_page_still_serves(root, monkeypatch) -> None:
     from lattice.server import web as web_module
     from lattice.server.testing import running_server
 
-    async def broken(state, slug):
+    async def broken():
         raise RuntimeError("warm broke")
 
-    monkeypatch.setattr(web_module, "board_row", broken)
+    monkeypatch.setattr(web_module, "in_worker", lambda fn: broken())
     with running_server(root) as fresh:
         failed = [line for line in fresh.log_lines if line.get("event") == "overview_warm_failed"]
         assert failed and "warm broke" in failed[0]["error"]

@@ -241,7 +241,7 @@ def running_server(
         server.should_exit = True
         thread.join(timeout=10)
         os.close(fd)
-        raise RuntimeError("test server did not finish its prewarm")
+        raise RuntimeError("test server did not finish its prewarm or overview warm")
     try:
         yield handle
     finally:
