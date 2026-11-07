@@ -24,10 +24,12 @@ Bearer`` alone. On those same routes, a request with no live cookie and no
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import html
 import re
+import time
 import urllib.parse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -375,6 +377,87 @@ async def logout(request: Request, state: ServerState) -> Response:
     return response
 
 
+def _summarize(
+    state: ServerState, project: Any
+) -> tuple[str | None, overview.BoardSummary | None]:
+    """Under the project's work lock, as every board read (SPEC §8.5): the project
+    code, and the board's summary at its head (memoized with the dashboard's
+    reads), or ``None`` when the board is unavailable."""
+    loaded = project.state == LOADED
+    if loaded:
+        try:
+            project.admit()  # hand edits journaled first, as /v1/projects does
+        except OpError as exc:
+            state.log.warning("overview_board_skipped", project=project.slug, error_code=exc.code)
+            loaded = False
+    code = overview.project_code(project.board)
+    journal = project.journal
+    if not loaded or journal is None:
+        return code, None
+    memo = state.dashboard_memos.for_project(project.slug)
+    head = (journal.epoch, journal.head_seq)
+    try:
+        summary = memo.get(
+            journal, head, overview.MEMO_KEY, lambda: overview.summarize_board(project.board)
+        )
+    except Exception as exc:  # noqa: BLE001 - one unreadable board never hides the rest
+        state.log.error("overview_board_failed", project=project.slug, error=repr(exc))
+        return code, None
+    return code, summary
+
+
+async def board_row(state: ServerState, slug: str) -> overview.Row | None:
+    """One project's overview row (``None`` when no such project is registered),
+    read under its work lock. A lock timeout reads as busy, a load failure as
+    unavailable; both are logged."""
+    project = state.registry.get(slug)
+    if project is None:
+        return None
+    try:
+        code, summary = await state.registry.run_locked(
+            project, lambda: _summarize(state, project), admit=False
+        )
+    except OpError as exc:  # its lock timed out, or it failed to load
+        state.log.warning("overview_board_skipped", project=slug, error_code=exc.code)
+        busy = "busy" if exc.code == "BOARD_BUSY" else "unavailable"
+        return overview.Row(slug=slug, code=None, summary=None, state=busy)
+    return overview.Row(slug=slug, code=code, summary=summary)
+
+
+async def warm_overview(state: ServerState) -> None:
+    """Once the startup prewarm has loaded the projects, compute every board's
+    overview summary in the background, one board's work lock at a time, so the
+    first ``GET /`` after a restart finds them memoized (and each dashboard its
+    replays cached). Logs ``overview_warmed``; a failure is logged, never raised."""
+    try:
+        await state.registry.prewarm_done.wait()
+        started = time.monotonic()
+        slugs = await in_worker(state.registry.slugs)
+        warmed = 0
+        for slug in slugs:
+            try:
+                row = await board_row(state, slug)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one board never leaves the rest cold
+                state.log.error("overview_board_failed", project=slug, error=repr(exc))
+                continue
+            if row is not None and row.summary is not None:
+                warmed += 1
+        state.log.info(
+            "overview_warmed",
+            boards=warmed,
+            projects=len(slugs),
+            duration_ms=round((time.monotonic() - started) * 1000, 1),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - warming is an optimization; never stop the server
+        state.log.error("overview_warm_failed", error=repr(exc))
+    finally:
+        state.overview_warm_done.set()
+
+
 async def index(request: Request, state: ServerState) -> Response:
     """``GET /``: the projects overview (:mod:`lattice.server.overview`), one row
     per project the session's token may see, each linking to its dashboard."""
@@ -384,52 +467,14 @@ async def index(request: Request, state: ServerState) -> Response:
         return RedirectResponse("/login", status_code=303)
     sort = overview.normalize_sort(request.query_params.get("sort"))
 
-    def summarize(project: Any) -> tuple[str | None, overview.BoardSummary | None]:
-        """Under the project's work lock, as every board read (SPEC §8.5): the
-        project code, and the board's summary at its head (memoized with the
-        dashboard's reads), or ``None`` when the board is unavailable."""
-        loaded = project.state == LOADED
-        if loaded:
-            try:
-                project.admit()  # hand edits journaled first, as /v1/projects does
-            except OpError as exc:
-                state.log.warning(
-                    "overview_board_skipped", project=project.slug, error_code=exc.code
-                )
-                loaded = False
-        code = overview.project_code(project.board)
-        journal = project.journal
-        if not loaded or journal is None:
-            return code, None
-        memo = state.dashboard_memos.for_project(project.slug)
-        head = (journal.epoch, journal.head_seq)
-        try:
-            summary = memo.get(
-                journal, head, overview.MEMO_KEY, lambda: overview.summarize_board(project.board)
-            )
-        except Exception as exc:  # noqa: BLE001 - one unreadable board never hides the rest
-            state.log.error("overview_board_failed", project=project.slug, error=repr(exc))
-            return code, None
-        return code, summary
-
     rows: list[overview.Row] = []
     slugs = await in_worker(state.registry.slugs)
     for slug in slugs:
         if not token.permits_project(slug):
             continue
-        project = state.registry.get(slug)
-        if project is None:
-            continue
-        try:
-            code, summary = await state.registry.run_locked(
-                project, lambda p=project: summarize(p), admit=False
-            )
-        except OpError as exc:  # its lock timed out, or it failed to load
-            state.log.warning("overview_board_skipped", project=slug, error_code=exc.code)
-            busy = "busy" if exc.code == "BOARD_BUSY" else "unavailable"
-            rows.append(overview.Row(slug=slug, code=None, summary=None, state=busy))
-            continue
-        rows.append(overview.Row(slug=slug, code=code, summary=summary))
+        row = await board_row(state, slug)
+        if row is not None:
+            rows.append(row)
 
     signed_in = f"Signed in as {token.user} ({token.machine})"
     if session.tailnet_node is not None:
