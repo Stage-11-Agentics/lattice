@@ -178,8 +178,9 @@ def running_server(
 ) -> Iterator[ServerHandle]:
     """Serve *root* on ``127.0.0.1`` in a background thread until the block exits.
 
-    By default it returns once the startup prewarm has loaded every project, so
-    a test's first request never races a project load; pass
+    By default it returns once the startup prewarm has loaded every project and
+    the overview warm has summarized each board, so a test's first request never
+    races a project load or a warm; pass
     ``wait_prewarm=False`` to observe the prewarm itself. Control requests are
     polled every *control_poll_seconds* (the server's own period is 2 s).
     *heartbeat_seconds* overrides the stream heartbeat (``server.json`` allows
@@ -229,7 +230,13 @@ def running_server(
         url=f"http://127.0.0.1:{port}", root=root, port=port, log_stream=stream, app=app
     )
     handle._server = server
-    if wait_prewarm and not wait_for(handle.state.registry.prewarm_done.is_set, startup_timeout):
+    if wait_prewarm and not wait_for(
+        lambda: (
+            handle.state.registry.prewarm_done.is_set()
+            and handle.state.overview_warm_done.is_set()
+        ),
+        startup_timeout,
+    ):
         handle.state.registry.close_all_streams()
         server.should_exit = True
         thread.join(timeout=10)

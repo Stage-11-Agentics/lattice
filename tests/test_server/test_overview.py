@@ -267,12 +267,47 @@ def test_a_reload_at_one_head_computes_nothing(server, token, web, monkeypatch) 
     monkeypatch.setattr(overview, "summarize_board", counting)
     web.get("/")
     web.get("/?sort=name")
-    assert sorted(calls) == ["alpha", "beta"]
+    assert calls == []  # the startup warm already summarized both boards
 
-    calls.clear()
     create_task(server, token, "alpha")  # a new head on alpha only
     web.get("/")
+    web.get("/?sort=tickets")
     assert calls == ["alpha"]
+
+
+def test_startup_warms_every_board_before_the_first_visit(root, monkeypatch) -> None:
+    from lattice.server.testing import running_server
+
+    calls: list[str] = []
+    original = overview.summarize_board
+
+    def counting(board: Path) -> overview.BoardSummary:
+        calls.append(board.parent.name)
+        return original(board)
+
+    monkeypatch.setattr(overview, "summarize_board", counting)
+    with running_server(root) as fresh:
+        assert sorted(calls) == ["alpha", "beta"]
+        warmed = [line for line in fresh.log_lines if line.get("event") == "overview_warmed"]
+        assert warmed and warmed[0]["boards"] == 2 and warmed[0]["projects"] == 2
+        page = _logged_in(fresh, mint(root)).get("/").text
+        assert len(rows(page)) == 2
+        assert sorted(calls) == ["alpha", "beta"]  # the first visit computed nothing
+
+
+def test_a_failing_warm_is_logged_and_the_page_still_serves(root, monkeypatch) -> None:
+    from lattice.server import web as web_module
+    from lattice.server.testing import running_server
+
+    async def broken(state, slug):
+        raise RuntimeError("warm broke")
+
+    monkeypatch.setattr(web_module, "board_row", broken)
+    with running_server(root) as fresh:
+        failed = [line for line in fresh.log_lines if line.get("event") == "overview_warm_failed"]
+        assert failed and "warm broke" in failed[0]["error"]
+        monkeypatch.undo()
+        assert _logged_in(fresh, mint(root)).get("/").status == 200
 
 
 def test_an_unavailable_board_is_still_listed(server, token, web) -> None:
@@ -305,6 +340,7 @@ def test_a_board_that_fails_to_summarize_is_logged_and_the_rest_still_show(
         return original(board)
 
     monkeypatch.setattr(overview, "summarize_board", broken)
+    create_task(server, token, "alpha")  # a new head: the warm summary no longer applies
     page = web.get("/")
     assert page.status == 200
     found = {r["slug"]: r for r in rows(page.text)}

@@ -138,6 +138,8 @@ class ServerState:
         )
         self.web = WebAssets()
         self.dashboard_memos = ReadMemos()
+        #: Set when the startup warm of every board's overview summary has ended.
+        self.overview_warm_done = asyncio.Event()
         self.limits = TokenLimits(config.limits)
         self.disk = DiskFloor(self.root, config.limits.min_free_disk_bytes)
         #: The stream heartbeat period; ``server.json`` sets it, and in-process
@@ -1629,9 +1631,13 @@ def create_app(root: Path, *, config: ServerConfig, log: ServerLog | None = None
                         "tailnet_grant_unusable", node=grant.node, token_id=grant.token
                     )
         state.registry.start()
+        warm = asyncio.create_task(web.warm_overview(state))
         try:
             yield
         finally:
+            warm.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await warm
             await state.registry.stop()
             state.log.info("shutdown", server_id=state.server_id)
 
